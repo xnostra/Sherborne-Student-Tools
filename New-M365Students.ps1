@@ -140,6 +140,11 @@ function New-StudentPassword {
     return "${f}${s}student@123"
 }
 
+function Get-NormalizedName {
+    param([string]$Name)
+    return (($Name -replace '\s+', ' ').Trim().ToLower())
+}
+
 # --- Load rows ---
 $rows = Import-Excel -Path $XlsxPath
 
@@ -149,12 +154,12 @@ $rows = Import-Excel -Path $XlsxPath
 # share a name - both are processed, just flagged here so you know to sanity-check them.
 $nameCounts = @{}
 foreach ($row in $rows) {
-    $key = ($row.'Full Name'.Trim().ToLower())
+    $key = Get-NormalizedName $row.'Full Name'
     if (-not $nameCounts.ContainsKey($key)) { $nameCounts[$key] = 0 }
     $nameCounts[$key]++
 }
 foreach ($name in ($nameCounts.Keys | Where-Object { $nameCounts[$_] -gt 1 })) {
-    $forms = $rows | Where-Object { $_.'Full Name'.Trim().ToLower() -eq $name } | ForEach-Object { $_.Form } | Select-Object -Unique
+    $forms = $rows | Where-Object { (Get-NormalizedName $_.'Full Name') -eq $name } | ForEach-Object { $_.Form } | Select-Object -Unique
     if ($forms.Count -gt 1) {
         Write-Host "Note: the name '$name' appears in more than one form ($($forms -join ', ')) - treating these as different students, not duplicates." -ForegroundColor Cyan
     }
@@ -190,8 +195,8 @@ $usedUpns = New-Object 'System.Collections.Generic.HashSet[string]'
 function Test-SameStudent {
     param($TenantUser, $Row, [string]$FullName)
 
-    # Full Name must match exactly (case-insensitive) - this is the only reliable identifier we have.
-    if ($TenantUser.DisplayName.Trim().ToLower() -ne $FullName.ToLower()) { return $false }
+    # Full Name must match (case/whitespace-insensitive) - this is the only reliable identifier we have.
+    if ((Get-NormalizedName $TenantUser.DisplayName) -ne (Get-NormalizedName $FullName)) { return $false }
 
     # If both sides know the Form, it must agree too - catches same-name-different-student cases
     # (e.g. siblings, or two unrelated students who happen to share a name in different years).
@@ -214,7 +219,7 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
     $row = $rows[$i]
     $sheetRow = $i + 2
     $fullName = $row.'Full Name'.Trim()
-    $key = $fullName.ToLower()
+    $key = Get-NormalizedName $fullName
 
     Write-Host "`n--- Row $sheetRow`: $fullName ---"
 
