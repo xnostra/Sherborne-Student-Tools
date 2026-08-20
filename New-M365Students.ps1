@@ -339,14 +339,24 @@ for ($c = 1; $c -le $ws.Dimension.End.Column; $c++) {
 }
 $emailCol = $headerCols['Pupil Email Address']
 
-$upnColIndex = $ws.Dimension.End.Column + 1
-$pwColIndex  = $upnColIndex + 1
-$ws.Cells[1, $upnColIndex].Value = "Created UPN"
-$ws.Cells[1, $pwColIndex].Value  = "Created Password"
+function Get-OrAddColumn {
+    param($Worksheet, $HeaderLookup, [string]$Title, [ref]$NextFreeCol)
+
+    if ($HeaderLookup.ContainsKey($Title)) { return $HeaderLookup[$Title] }
+
+    $col = $NextFreeCol.Value
+    $Worksheet.Cells[1, $col].Value = $Title
+    $HeaderLookup[$Title] = $col
+    $NextFreeCol.Value++
+    return $col
+}
+
+$nextFreeCol = $ws.Dimension.End.Column + 1
+$upnColIndex = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Created UPN" -NextFreeCol ([ref]$nextFreeCol)
+$pwColIndex  = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Created Password" -NextFreeCol ([ref]$nextFreeCol)
 
 # --- Legend explaining the "Pupil Email Address" cell highlight colors ---
-$legendCol = $pwColIndex + 2
-$ws.Cells[1, $legendCol].Value = "Legend (Pupil Email Address highlight)"
+$legendCol = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Legend (Pupil Email Address highlight)" -NextFreeCol ([ref]$nextFreeCol)
 $ws.Cells[1, $legendCol].Style.Font.Bold = $true
 
 $legendRows = @(
