@@ -186,8 +186,8 @@ if (-not $sku) { throw "Invalid selection." }
 $available = $sku.PrepaidUnits.Enabled - $sku.ConsumedUnits
 Write-Host "Using license: $($sku.SkuPartNumber)"
 
-$emailNumber = Read-Host "`nWhat number should be appended to new student email addresses? (e.g. 26)"
-if ($emailNumber -notmatch '^\d+$') { throw "The number must be digits only." }
+$emailNumber = Read-Host "`nWhat number should be appended to new student email addresses? (e.g. 26 or 26q)"
+if ($emailNumber -notmatch '^[a-zA-Z0-9]+$') { throw "The value can only contain letters and digits (e.g. 26 or 26q)." }
 
 $usedUpns = New-Object 'System.Collections.Generic.HashSet[string]'
 
@@ -243,7 +243,7 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
             if (Test-SameStudent -TenantUser $found -Row $row -FullName $fullName) {
                 Write-Host "Existing account confirmed: $existingEmail" -ForegroundColor Green
                 $usedUpns.Add($existingEmail) | Out-Null
-                $results[$sheetRow] = 'existing'
+                $results[$sheetRow] = @{ Status = 'existing'; Upn = $existingEmail }
                 $summaryExisting++
                 continue
             } else {
@@ -265,7 +265,7 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
         $m = $confirmedMatches[0]
         Write-Host "Found existing account by name match: $($m.UserPrincipalName)" -ForegroundColor Green
         $usedUpns.Add($m.UserPrincipalName) | Out-Null
-        $results[$sheetRow] = 'existing'
+        $results[$sheetRow] = @{ Status = 'existing'; Upn = $m.UserPrincipalName }
         $summaryExisting++
         continue
     } elseif ($nameMatches.Count -gt 0) {
@@ -344,11 +344,34 @@ $pwColIndex  = $upnColIndex + 1
 $ws.Cells[1, $upnColIndex].Value = "Created UPN"
 $ws.Cells[1, $pwColIndex].Value  = "Created Password"
 
+# --- Legend explaining the "Pupil Email Address" cell highlight colors ---
+$legendCol = $pwColIndex + 2
+$ws.Cells[1, $legendCol].Value = "Legend (Pupil Email Address highlight)"
+$ws.Cells[1, $legendCol].Style.Font.Bold = $true
+
+$legendRows = @(
+    @{ Text = "Yellow = new account created this run"; Color = [System.Drawing.Color]::Yellow }
+    @{ Text = "Green  = existing account confirmed (already had one)"; Color = [System.Drawing.Color]::LightGreen }
+    @{ Text = "Orange = needs manual review (name/email mismatch found)"; Color = [System.Drawing.Color]::Orange }
+    @{ Text = "No fill = duplicate row, skipped"; Color = $null }
+)
+for ([int]$legendIdx = 0; $legendIdx -lt $legendRows.Count; $legendIdx++) {
+    $legendRowNum = 2 + $legendIdx
+    $legendCell = $ws.Cells[$legendRowNum, $legendCol]
+    $legendCell.Value = $legendRows[$legendIdx].Text
+    if ($legendRows[$legendIdx].Color) {
+        $legendCell.Style.Fill.PatternType = 'Solid'
+        $legendCell.Style.Fill.BackgroundColor.SetColor($legendRows[$legendIdx].Color)
+    }
+}
+$ws.Column($legendCol).Width = 55
+
 foreach ($sheetRow in $results.Keys) {
     $result = $results[$sheetRow]
     $cell = $ws.Cells[$sheetRow, $emailCol]
 
-    if ($result -eq 'existing') {
+    if ($result -is [hashtable] -and $result.Status -eq 'existing') {
+        $cell.Value = $result.Upn
         $cell.Style.Fill.PatternType = 'Solid'
         $cell.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::LightGreen)
     } elseif ($result -eq 'review') {

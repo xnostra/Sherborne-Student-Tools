@@ -17,8 +17,9 @@ That's it - it downloads the toolkit scripts to `Desktop\StudentToolkit` and ope
 | Button | Mode | What it does |
 |---|---|---|
 | **BULK - Add New Students (XLSX)** | Bulk | Reads the school MIS export, creates missing student accounts, assigns the A5 for Students license, and highlights results in a copy of the file |
+| **BULK - Reset Passwords (Prep / SEN)** | Bulk | Resets passwords for a list of student accounts - built for whole-class Prep/SEN resets |
 
-The button opens a console window where you sign in / pick a license - the GUI itself just collects your inputs.
+Each button opens a console window where you sign in / pick options - the GUI itself just collects your inputs.
 
 ## New Student File Format (XLSX, from the school MIS export)
 
@@ -45,6 +46,22 @@ What it does:
 - **Output**: nothing is written to your original file - a copy named `<file> - processed.xlsx` is created with: new accounts highlighted **yellow** (plus the generated UPN/password in two extra columns), confirmed existing accounts highlighted **green**, and ambiguous/possible-mismatch rows highlighted **orange** for you to check by hand.
 
 Add `-WhatIfOnly` to preview without creating any accounts.
+
+## Bulk Password Reset (Prep / SEN students)
+
+Built for resetting a whole class at once with an easy, uniform result - point it at a file
+with an `Email` or `Pupil Email Address` column (a raw MIS export works as-is):
+
+```powershell
+.\Set-M365StudentPasswords.ps1 -CsvPath ".\class-list.csv"
+```
+
+It then asks:
+
+- **A** - auto-generate an easy password for each student (a different simple word+number password per account, e.g. `Tiger65@`)
+- **M** - you type ONE password that gets applied to every account in the file
+
+Results (email + password used) are printed to the console and also saved next to your input file as `<file> - passwords.csv`, ready to hand out.
 
 ## Requirements
 

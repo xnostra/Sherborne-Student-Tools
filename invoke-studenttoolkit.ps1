@@ -10,7 +10,7 @@ $targetDir = Join-Path $env:USERPROFILE "Desktop\StudentToolkit"
 
 New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
 
-$files = @("New-M365Students.ps1", "StudentToolkit.ps1")
+$files = @("New-M365Students.ps1", "Set-M365StudentPasswords.ps1", "StudentToolkit.ps1")
 foreach ($file in $files) {
     Invoke-WebRequest -Uri "$repoRaw/$file" -OutFile (Join-Path $targetDir $file) -UseBasicParsing
 }
