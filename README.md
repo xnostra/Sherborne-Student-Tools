@@ -37,12 +37,12 @@ Run it with:
 
 What it does:
 
-- **Duplicates**: if the same `Full Name` appears more than once in the sheet, only the first row is processed - later rows are skipped with a warning.
-- **Existing accounts**: if `Pupil Email Address` is already filled in, it's verified against the tenant. Confirmed accounts are left alone and the cell is highlighted **green**. If the listed email doesn't actually exist, the student is treated as new. A name-match check against the tenant is also run as an extra safety net before creating anything.
+- **Duplicates**: a row is only skipped as a true duplicate when both `Full Name` AND `Form` match an earlier row. Same name but a different form is treated as two different students (e.g. two unrelated students sharing a name) and both are processed.
+- **Existing accounts**: if `Pupil Email Address` is already filled in, it's verified against the tenant - and the tenant account's display name (and Form, when known) must actually match this row, not just exist. Confirmed matches are left alone and highlighted **green**. If the listed address belongs to someone else, or multiple/no-clear tenant match is found by name, nothing is created and the row is highlighted **orange** for manual review. A name-match check against the tenant is also run as an extra safety net before creating anything new.
 - **New email generation**: you're asked once for a number to append (e.g. `26`). New addresses are built as the first 4 letters of the student's `Forename` + that number (e.g. `omar26@sherborneqatar.org`). If that address is taken, one more letter from the name is added and it tries again, repeating until a free address is found.
 - **Password**: first-initial + last-initial + `student@123` (all lowercase), e.g. `oastudent@123`.
 - **License**: you pick the A5 for Students SKU from the tenant's available licenses (the script suggests a likely match).
-- **Output**: nothing is written to your original file - a copy named `<file> - processed.xlsx` is created with new accounts highlighted **yellow** (plus the generated UPN/password in two extra columns) and existing accounts highlighted **green**.
+- **Output**: nothing is written to your original file - a copy named `<file> - processed.xlsx` is created with: new accounts highlighted **yellow** (plus the generated UPN/password in two extra columns), confirmed existing accounts highlighted **green**, and ambiguous/possible-mismatch rows highlighted **orange** for you to check by hand.
 
 Add `-WhatIfOnly` to preview without creating any accounts.
 

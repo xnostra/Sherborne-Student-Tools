@@ -10,11 +10,22 @@ Expected columns (case-insensitive), matching the MIS export:
     Form, Form Tutor, Form Tutor Initials, Year (NC), Year Code
 
 What it does:
-  - Skips rows whose "Full Name" is a duplicate elsewhere in the sheet (warns, processes the first occurrence only).
-  - If "Pupil Email Address" is already filled in, verifies that account really exists in the tenant.
-      - Exists and matches       -> leave alone, highlight the cell GREEN.
+  - Skips rows that are true duplicates within the sheet - same "Full Name" AND same "Form" as an
+    earlier row. Same name but a DIFFERENT form is treated as two different students (e.g. two
+    unrelated students who happen to share a name) and both are processed independently.
+  - If "Pupil Email Address" is already filled in, verifies that account really exists in the tenant
+    AND that its display name (and Form, when known) actually matches this row - not just that some
+    account with that address exists.
+      - Confirmed match          -> leave alone, highlight the cell GREEN.
+      - Exists but doesn't match -> looks like it belongs to a different student with a similar
+                                     name/address. Nothing is created; highlighted ORANGE for you
+                                     to check manually.
       - Blank, or doesn't exist  -> treated as a new student (falls through to creation below).
-  - For new students: asks once for a number to append, then builds the email as
+  - As a second safety net (for rows with no listed email), it also searches the tenant by exact
+    display name. A single confirmed match (name + Form agree) is treated as existing (GREEN).
+    Multiple accounts sharing that name, or a match whose Form doesn't line up, is too risky to
+    guess - flagged ORANGE for manual review instead of silently creating or skipping.
+  - For genuinely new students: asks once for a number to append, then builds the email as
         <first 4 letters of Forename><number>@sherborneqatar.org
     If that UPN is already taken (in the tenant, or already used earlier in this run), it takes one
     more letter from the name and tries again, repeating until a free address is found.
@@ -133,11 +144,20 @@ function New-StudentPassword {
 $rows = Import-Excel -Path $XlsxPath
 
 # --- Duplicate full-name detection within the sheet ---
+# Same Full Name + same Form is treated as a genuine duplicate row (skipped).
+# Same Full Name but a DIFFERENT Form is treated as two different students who happen to
+# share a name - both are processed, just flagged here so you know to sanity-check them.
 $nameCounts = @{}
 foreach ($row in $rows) {
     $key = ($row.'Full Name'.Trim().ToLower())
     if (-not $nameCounts.ContainsKey($key)) { $nameCounts[$key] = 0 }
     $nameCounts[$key]++
+}
+foreach ($name in ($nameCounts.Keys | Where-Object { $nameCounts[$_] -gt 1 })) {
+    $forms = $rows | Where-Object { $_.'Full Name'.Trim().ToLower() -eq $name } | ForEach-Object { $_.Form } | Select-Object -Unique
+    if ($forms.Count -gt 1) {
+        Write-Host "Note: the name '$name' appears in more than one form ($($forms -join ', ')) - treating these as different students, not duplicates." -ForegroundColor Cyan
+    }
 }
 
 # --- Ask for the license and the email number up front ---
@@ -167,11 +187,28 @@ if ($emailNumber -notmatch '^\d+$') { throw "The number must be digits only." }
 $usedUpns = New-Object 'System.Collections.Generic.HashSet[string]'
 
 # --- Process rows, tracking outcomes per Excel row number (header = row 1) ---
-$results = @{}   # rowIndex (1-based, matching sheet row = index+2) -> 'created' | 'existing' | 'skipped'
+function Test-SameStudent {
+    param($TenantUser, $Row, [string]$FullName)
+
+    # Full Name must match exactly (case-insensitive) - this is the only reliable identifier we have.
+    if ($TenantUser.DisplayName.Trim().ToLower() -ne $FullName.ToLower()) { return $false }
+
+    # If both sides know the Form, it must agree too - catches same-name-different-student cases
+    # (e.g. siblings, or two unrelated students who happen to share a name in different years).
+    if ($Row.Form -and $TenantUser.Department -and ($Row.Form.ToString().Trim() -ne $TenantUser.Department.Trim())) {
+        return $false
+    }
+
+    return $true
+}
+
+$results = @{}   # rowIndex (1-based, matching sheet row = index+2) -> 'created' | 'existing' | 'skipped' | 'review'
 $summaryCreated = 0
 $summaryExisting = 0
 $summarySkippedDup = 0
 $summaryFailed = 0
+$summaryReview = 0
+$seenRowKeys = @{}   # "name|form" -> first sheet row that used it, for true in-sheet duplicate rows
 
 for ($i = 0; $i -lt $rows.Count; $i++) {
     $row = $rows[$i]
@@ -181,41 +218,58 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
 
     Write-Host "`n--- Row $sheetRow`: $fullName ---"
 
-    if ($nameCounts[$key] -gt 1) {
-        $firstIndexForName = 0..($rows.Count - 1) | Where-Object { $rows[$_].'Full Name'.Trim().ToLower() -eq $key } | Select-Object -First 1
-        if ($i -ne $firstIndexForName) {
-            Write-Warning "Duplicate name '$fullName' - already handled at row $($firstIndexForName + 2). Skipping this row."
-            $results[$sheetRow] = 'skipped'
-            $summarySkippedDup++
-            continue
-        }
+    $rowKey = "$key|$($row.Form)"
+    if ($seenRowKeys.ContainsKey($rowKey)) {
+        Write-Warning "Duplicate row: '$fullName' in form '$($row.Form)' already handled at row $($seenRowKeys[$rowKey]). Skipping this row."
+        $results[$sheetRow] = 'skipped'
+        $summarySkippedDup++
+        continue
     }
+    $seenRowKeys[$rowKey] = $sheetRow
 
     $existingEmail = if ($row.'Pupil Email Address') { $row.'Pupil Email Address'.ToString().Trim() } else { '' }
     if ($existingEmail) {
         try {
-            $found = Get-MgUser -UserId $existingEmail -ErrorAction Stop
+            $found = Get-MgUser -UserId $existingEmail -Property DisplayName, UserPrincipalName, Department -ErrorAction Stop
         } catch {
             $found = $null
         }
         if ($found) {
-            Write-Host "Existing account confirmed: $existingEmail" -ForegroundColor Green
-            $usedUpns.Add($existingEmail) | Out-Null
-            $results[$sheetRow] = 'existing'
-            $summaryExisting++
-            continue
+            if (Test-SameStudent -TenantUser $found -Row $row -FullName $fullName) {
+                Write-Host "Existing account confirmed: $existingEmail" -ForegroundColor Green
+                $usedUpns.Add($existingEmail) | Out-Null
+                $results[$sheetRow] = 'existing'
+                $summaryExisting++
+                continue
+            } else {
+                Write-Warning "Sheet lists '$existingEmail' for '$fullName' (form '$($row.Form)'), but that account belongs to '$($found.DisplayName)' (form '$($found.Department)') - this looks like a different student. Flagging for manual review instead of assuming they're the same."
+                $results[$sheetRow] = 'review'
+                $summaryReview++
+                continue
+            }
         } else {
             Write-Warning "Sheet lists '$existingEmail' but no such account exists in the tenant - treating as a new student."
         }
     }
 
-    # Extra duplicate safety net: exact display-name match already in the tenant
-    $byName = Get-MgUser -Filter "displayName eq '$($fullName.Replace("'", "''"))'" -ErrorAction SilentlyContinue
-    if ($byName) {
-        Write-Host "Found existing account by name match: $($byName.UserPrincipalName)" -ForegroundColor Green
-        $usedUpns.Add($byName.UserPrincipalName) | Out-Null
+    # Extra duplicate safety net: display-name match already in the tenant
+    $nameMatches = @(Get-MgUser -Filter "displayName eq '$($fullName.Replace("'", "''"))'" -Property DisplayName, UserPrincipalName, Department -All -ErrorAction SilentlyContinue)
+    $confirmedMatches = @($nameMatches | Where-Object { Test-SameStudent -TenantUser $_ -Row $row -FullName $fullName })
+
+    if ($confirmedMatches.Count -eq 1) {
+        $m = $confirmedMatches[0]
+        Write-Host "Found existing account by name match: $($m.UserPrincipalName)" -ForegroundColor Green
+        $usedUpns.Add($m.UserPrincipalName) | Out-Null
         $results[$sheetRow] = 'existing'
         $summaryExisting++
+        continue
+    } elseif ($nameMatches.Count -gt 0) {
+        # Either multiple confirmed matches (shouldn't normally happen) or matches whose Form
+        # didn't line up - too risky to guess, so leave it for a human to check.
+        $candidates = ($nameMatches | ForEach-Object { "$($_.UserPrincipalName) (form '$($_.Department)')" }) -join '; '
+        Write-Warning "Found tenant account(s) named '$fullName' but couldn't confirm a match for form '$($row.Form)': $candidates. Flagging for manual review; no account will be created automatically."
+        $results[$sheetRow] = 'review'
+        $summaryReview++
         continue
     }
 
@@ -292,6 +346,9 @@ foreach ($sheetRow in $results.Keys) {
     if ($result -eq 'existing') {
         $cell.Style.Fill.PatternType = 'Solid'
         $cell.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::LightGreen)
+    } elseif ($result -eq 'review') {
+        $cell.Style.Fill.PatternType = 'Solid'
+        $cell.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::Orange)
     } elseif ($result -is [hashtable] -and $result.Status -eq 'created') {
         $cell.Value = $result.Upn
         $cell.Style.Fill.PatternType = 'Solid'
@@ -307,6 +364,7 @@ Write-Host "`n===================================="
 Write-Host "Created:            $summaryCreated" -ForegroundColor Yellow
 Write-Host "Already existing:   $summaryExisting" -ForegroundColor Green
 Write-Host "Skipped (dup rows): $summarySkippedDup"
+Write-Host "Needs manual review: $summaryReview" -ForegroundColor DarkYellow
 Write-Host "Failed to create:   $summaryFailed" -ForegroundColor Red
 Write-Host "Results written to: $OutputPath"
 Write-Host "===================================="
