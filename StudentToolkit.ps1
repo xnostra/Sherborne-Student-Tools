@@ -30,7 +30,7 @@ $colorText      = [System.Drawing.Color]::FromArgb(60, 60, 60)
 # --- Form ---
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Sherborne Qatar Student Tools"
-$form.Size = New-Object System.Drawing.Size(440, 470)
+$form.Size = New-Object System.Drawing.Size(440, 540)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
 $form.MaximizeBox = $false
@@ -108,13 +108,23 @@ $btnBulkResetPw.Add_Click({
     Start-Process powershell.exe -ArgumentList "-NoExit", "-Command", $cmd
 })
 
+# --- Button 3: Reset a single student's password ---
+$btnSingleResetPw = New-ActionButton -Text "SINGLE - Set / Reset One Password" -Y 260
+$btnSingleResetPw.Add_Click({
+    $rawEmail = [Microsoft.VisualBasic.Interaction]::InputBox("Email address of the account (you can paste messy text - it'll be extracted):", "Email", "")
+    if (-not $rawEmail) { return }
+
+    $cmd = "& '$scriptDir\Set-M365StudentPasswords.ps1' -Email '$rawEmail'"
+    Start-Process powershell.exe -ArgumentList "-NoExit", "-Command", $cmd
+})
+
 # --- Footer ---
 $note = New-Object System.Windows.Forms.Label
 $note.Text = "Each action opens a console window - sign in there when prompted."
 $note.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
 $note.AutoSize = $true
 $note.ForeColor = [System.Drawing.Color]::Gray
-$note.Location = New-Object System.Drawing.Point(30, 370)
+$note.Location = New-Object System.Drawing.Point(30, 440)
 $form.Controls.Add($note)
 
 $version = New-Object System.Windows.Forms.Label
@@ -122,7 +132,7 @@ $version.Text = "Sherborne Qatar Student Tools"
 $version.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 $version.AutoSize = $true
 $version.ForeColor = [System.Drawing.Color]::LightGray
-$version.Location = New-Object System.Drawing.Point(30, 395)
+$version.Location = New-Object System.Drawing.Point(30, 465)
 $form.Controls.Add($version)
 
 [void]$form.ShowDialog()

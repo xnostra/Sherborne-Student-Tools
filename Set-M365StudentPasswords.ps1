@@ -1,27 +1,31 @@
 <#
-Bulk resets passwords for a list of student accounts - built for Prep and SEN ("special child")
-classes where a whole group needs a fresh, easy password at once.
+Resets a student's password - one account at a time, or in bulk for a whole class. Built for Prep
+and SEN ("special child") groups where a whole class often needs a fresh, easy password at once.
 Run manually by a Global Admin / User Administrator. Requires the Microsoft.Graph module:
     Install-Module Microsoft.Graph -Scope CurrentUser
 (.xlsx input also requires the ImportExcel module - installed automatically if missing)
 
-The file just needs a column of email addresses - either "Email" or "Pupil Email Address"
-(case-insensitive) is accepted, so you can point it straight at a class export.
+Usage - single account:
+    .\Set-M365StudentPasswords.ps1 -Email pupil@sherborneqatar.org
 
-When you run it, it asks:
-    A = auto-generate an easy password for each student (a different one per account)
-    M = you type ONE password that gets applied to every account in the file
-
-Usage:
+Usage - bulk from CSV or XLSX:
     .\Set-M365StudentPasswords.ps1 -CsvPath ".\class-list.csv"
     .\Set-M365StudentPasswords.ps1 -CsvPath ".\class-list.xlsx"
 
-Results (email + password used) are printed to the console and also saved next to your input
-file as "<file> - passwords.csv" so they're easy to hand out.
+The bulk file just needs a column of email addresses - either "Email" or "Pupil Email Address"
+(case-insensitive) is accepted, so you can point it straight at a class export.
+
+Either way, it asks:
+    A = auto-generate an easy password (a different one per account, for bulk)
+    M = you type the password yourself (one shared password for everyone, for bulk)
+
+Results (email + password used) are printed to the console. For bulk, they're also saved next to
+your input file as "<file> - passwords.csv" so they're easy to hand out.
 #>
 
 param(
-    [Parameter(Mandatory = $true)]
+    [string]$Email,
+
     [string]$CsvPath
 )
 
@@ -60,6 +64,14 @@ function Get-EmailColumnName {
     throw "Couldn't find an 'Email' or 'Pupil Email Address' column in the file."
 }
 
+function Get-CleanEmail {
+    param([string]$Text)
+    if ($Text -match '[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}') {
+        return $matches[0]
+    }
+    return $Text.Trim()
+}
+
 function New-EasyPassword {
     $words = @(
         "Tiger", "Panda", "Lion", "Bunny", "Star", "Moon", "Apple", "Ocean",
@@ -71,73 +83,138 @@ function New-EasyPassword {
     return "$word$number@"
 }
 
-if (-not (Test-Path $CsvPath)) {
-    throw "File not found: $CsvPath"
-}
+function Set-OneStudentPassword {
+    param(
+        [string]$TargetEmail,
+        [string]$FixedPassword,   # if set, used as-is (no retry - it's what the admin typed)
+        [int]$MaxAttempts = 5
+    )
 
-$rows = Import-DataFile -Path $CsvPath
-if ($rows.Count -eq 0) { throw "No rows found in $CsvPath." }
+    $succeeded = $false
+    $lastError = $null
+    $usedPassword = $null
 
-$emailCol = Get-EmailColumnName -Row $rows[0]
+    for ($attempt = 1; $attempt -le $MaxAttempts -and -not $succeeded; $attempt++) {
+        $usedPassword = if ($FixedPassword) { $FixedPassword } else { New-EasyPassword }
 
-Write-Host "`nFound $($rows.Count) account(s) in the file."
-
-$mode = $null
-while ($mode -notin @('A', 'M')) {
-    $mode = (Read-Host "`nType A to auto-generate an easy password for each student, or M to set one password for everyone").Trim().ToUpper()
-}
-
-$sharedPassword = $null
-if ($mode -eq 'M') {
-    while (-not $sharedPassword) {
-        $sharedPassword = (Read-Host "Enter the password to apply to all $($rows.Count) account(s)").Trim()
-        if (-not $sharedPassword) { Write-Warning "Password can't be blank." }
+        try {
+            Update-MgUser -UserId $TargetEmail -PasswordProfile @{
+                Password                      = $usedPassword
+                ForceChangePasswordNextSignIn = $false
+            } -ErrorAction Stop
+            $succeeded = $true
+        } catch {
+            $lastError = $_.Exception.Message
+            if ($FixedPassword -or $attempt -ge $MaxAttempts) { break }
+            Write-Warning "Attempt $attempt failed for $TargetEmail (retrying with a new password): $lastError"
+        }
     }
+
+    if ($succeeded) {
+        Write-Host "$TargetEmail  ->  $usedPassword" -ForegroundColor Green
+        return [pscustomobject]@{ Email = $TargetEmail; Password = $usedPassword; Status = 'Reset' }
+    } else {
+        Write-Warning "Failed for $TargetEmail after $attempt attempt(s): $lastError"
+        return [pscustomobject]@{ Email = $TargetEmail; Password = ''; Status = "Failed: $lastError" }
+    }
+}
+
+function Open-OutlookDraft {
+    param([string]$To, [string]$Subject, [string]$Body)
+    $mailto = "mailto:{0}?subject={1}&body={2}" -f `
+        [uri]::EscapeDataString($To), `
+        [uri]::EscapeDataString($Subject), `
+        [uri]::EscapeDataString($Body)
+    Start-Process $mailto
+}
+
+if (-not $Email -and -not $CsvPath) {
+    throw "Provide either -Email (single account) or -CsvPath (bulk)."
 }
 
 Connect-MgGraph -Scopes "User.ReadWrite.All", "Directory.ReadWrite.All"
 
-$results = @()
-foreach ($row in $rows) {
-    $email = $row.$emailCol
-    if (-not $email) { continue }
-    $email = $email.ToString().Trim()
-    if (-not $email) { continue }
+if ($Email) {
+    $Email = Get-CleanEmail -Text $Email
 
-    $maxAttempts = if ($mode -eq 'M') { 1 } else { 5 }
-    $succeeded = $false
-    $lastError = $null
+    $mode = $null
+    while ($mode -notin @('A', 'M')) {
+        $mode = (Read-Host "`nType A to auto-generate an easy password, or M to type your own").Trim().ToUpper()
+    }
 
-    for ($attempt = 1; $attempt -le $maxAttempts -and -not $succeeded; $attempt++) {
-        $password = if ($mode -eq 'M') { $sharedPassword } else { New-EasyPassword }
-
-        try {
-            Update-MgUser -UserId $email -PasswordProfile @{
-                Password                      = $password
-                ForceChangePasswordNextSignIn = $false
-            } -ErrorAction Stop
-            Write-Host "$email  ->  $password" -ForegroundColor Green
-            $results += [pscustomobject]@{ Email = $email; Password = $password; Status = 'Reset' }
-            $succeeded = $true
-        } catch {
-            $lastError = $_.Exception.Message
-            if ($attempt -lt $maxAttempts) {
-                Write-Warning "Attempt $attempt failed for $email (retrying with a new password): $lastError"
-            }
+    $fixedPassword = $null
+    if ($mode -eq 'M') {
+        while (-not $fixedPassword) {
+            $fixedPassword = (Read-Host "Enter the new password for $Email").Trim()
+            if (-not $fixedPassword) { Write-Warning "Password can't be blank." }
         }
     }
 
-    if (-not $succeeded) {
-        Write-Warning "Failed for $email after $maxAttempts attempt(s): $lastError"
-        $results += [pscustomobject]@{ Email = $email; Password = ''; Status = "Failed: $lastError" }
+    $result = Set-OneStudentPassword -TargetEmail $Email -FixedPassword $fixedPassword
+
+    if ($result.Status -eq 'Reset') {
+        $subject = "Your Sherborne Qatar Office 365 Account Password"
+        $body = @"
+Hi,
+
+Your Office 365 account password has been reset.
+
+Email: $($result.Email)
+Password: $($result.Password)
+
+Please keep this password confidential.
+"@
+        Write-Host "`n----- Copy/paste email -----"
+        Write-Host "To: $($result.Email)"
+        Write-Host "Subject: $subject"
+        Write-Host ""
+        Write-Host $body
+        Write-Host "-----------------------------"
+
+        Write-Host "`nOpening Outlook with this email ready to send..."
+        Open-OutlookDraft -To $result.Email -Subject $subject -Body $body
     }
+} else {
+    if (-not (Test-Path $CsvPath)) {
+        throw "File not found: $CsvPath"
+    }
+
+    $rows = Import-DataFile -Path $CsvPath
+    if ($rows.Count -eq 0) { throw "No rows found in $CsvPath." }
+
+    $emailCol = Get-EmailColumnName -Row $rows[0]
+
+    Write-Host "`nFound $($rows.Count) account(s) in the file."
+
+    $mode = $null
+    while ($mode -notin @('A', 'M')) {
+        $mode = (Read-Host "`nType A to auto-generate an easy password for each student, or M to set one password for everyone").Trim().ToUpper()
+    }
+
+    $sharedPassword = $null
+    if ($mode -eq 'M') {
+        while (-not $sharedPassword) {
+            $sharedPassword = (Read-Host "Enter the password to apply to all $($rows.Count) account(s)").Trim()
+            if (-not $sharedPassword) { Write-Warning "Password can't be blank." }
+        }
+    }
+
+    $results = @()
+    foreach ($row in $rows) {
+        $rowEmail = $row.$emailCol
+        if (-not $rowEmail) { continue }
+        $rowEmail = $rowEmail.ToString().Trim()
+        if (-not $rowEmail) { continue }
+
+        $results += Set-OneStudentPassword -TargetEmail $rowEmail -FixedPassword $sharedPassword
+    }
+
+    $outputPath = Join-Path (Split-Path -Parent (Resolve-Path $CsvPath)) "$([System.IO.Path]::GetFileNameWithoutExtension($CsvPath)) - passwords.csv"
+    $results | Export-Csv -Path $outputPath -NoTypeInformation
+
+    $succeededCount = ($results | Where-Object { $_.Status -eq 'Reset' }).Count
+    Write-Host "`n===================================="
+    Write-Host "Reset:   $succeededCount of $($rows.Count)" -ForegroundColor Green
+    Write-Host "Results written to: $outputPath"
+    Write-Host "===================================="
 }
-
-$outputPath = Join-Path (Split-Path -Parent (Resolve-Path $CsvPath)) "$([System.IO.Path]::GetFileNameWithoutExtension($CsvPath)) - passwords.csv"
-$results | Export-Csv -Path $outputPath -NoTypeInformation
-
-$succeeded = ($results | Where-Object { $_.Status -eq 'Reset' }).Count
-Write-Host "`n===================================="
-Write-Host "Reset:   $succeeded of $($rows.Count)" -ForegroundColor Green
-Write-Host "Results written to: $outputPath"
-Write-Host "===================================="

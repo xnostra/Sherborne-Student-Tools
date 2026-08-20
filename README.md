@@ -18,6 +18,7 @@ That's it - it downloads the toolkit scripts to `Desktop\StudentToolkit` and ope
 |---|---|---|
 | **BULK - Add New Students (XLSX)** | Bulk | Reads the school MIS export, creates missing student accounts, assigns the A5 for Students license, and highlights results in a copy of the file |
 | **BULK - Reset Passwords (Prep / SEN)** | Bulk | Resets passwords for a list of student accounts - built for whole-class Prep/SEN resets |
+| **SINGLE - Set / Reset One Password** | Single | Paste an email (messy text gets extracted automatically) and reset just that one account |
 
 Each button opens a console window where you sign in / pick options - the GUI itself just collects your inputs.
 
@@ -47,21 +48,27 @@ What it does:
 
 Add `-WhatIfOnly` to preview without creating any accounts.
 
-## Bulk Password Reset (Prep / SEN students)
+## Password Reset (single account or bulk)
 
-Built for resetting a whole class at once with an easy, uniform result - point it at a file
-with an `Email` or `Pupil Email Address` column (a raw MIS export works as-is):
+**Single account** - paste an email and reset just that one:
+
+```powershell
+.\Set-M365StudentPasswords.ps1 -Email pupil@sherborneqatar.org
+```
+
+**Bulk** - built for resetting a whole class at once with an easy, uniform result. Point it at a
+file with an `Email` or `Pupil Email Address` column (a raw MIS export works as-is):
 
 ```powershell
 .\Set-M365StudentPasswords.ps1 -CsvPath ".\class-list.csv"
 ```
 
-It then asks:
+Either way, it asks:
 
-- **A** - auto-generate an easy password for each student (a different simple word+number password per account, e.g. `Tiger65@`)
-- **M** - you type ONE password that gets applied to every account in the file
+- **A** - auto-generate an easy password (a different simple word+number password per account for bulk, e.g. `Tiger65@`) - retries automatically with a new one if the tenant rejects it for complexity
+- **M** - you type the password yourself (one shared password for everyone, for bulk)
 
-Results (email + password used) are printed to the console and also saved next to your input file as `<file> - passwords.csv`, ready to hand out.
+For a single account, a copy/paste-ready email (To/Subject/Body) is printed and Outlook opens automatically with it pre-filled. For bulk, results (email + password used) are printed to the console and saved next to your input file as `<file> - passwords.csv`, ready to hand out.
 
 ## Requirements
 
