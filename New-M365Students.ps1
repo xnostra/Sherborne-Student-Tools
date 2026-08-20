@@ -171,6 +171,7 @@ $results = @{}   # rowIndex (1-based, matching sheet row = index+2) -> 'created'
 $summaryCreated = 0
 $summaryExisting = 0
 $summarySkippedDup = 0
+$summaryFailed = 0
 
 for ($i = 0; $i -lt $rows.Count; $i++) {
     $row = $rows[$i]
@@ -190,7 +191,7 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
         }
     }
 
-    $existingEmail = ($row.'Pupil Email Address' | ForEach-Object { $_.ToString().Trim() })
+    $existingEmail = if ($row.'Pupil Email Address') { $row.'Pupil Email Address'.ToString().Trim() } else { '' }
     if ($existingEmail) {
         try {
             $found = Get-MgUser -UserId $existingEmail -ErrorAction Stop
@@ -234,19 +235,30 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
             Write-Warning "No available '$($sku.SkuPartNumber)' licenses left - creating account without a license."
         }
 
-        $newUser = New-MgUser -DisplayName $fullName `
-            -GivenName $forename `
-            -Surname $surname `
-            -UserPrincipalName $upn `
-            -MailNickname $mailNickname `
-            -JobTitle "Student" `
-            -Department $row.Form `
-            -UsageLocation $UsageLocation `
-            -AccountEnabled `
-            -PasswordProfile @{
+        $newUserParams = @{
+            DisplayName       = $fullName
+            GivenName         = $forename
+            Surname           = $surname
+            UserPrincipalName = $upn
+            MailNickname      = $mailNickname
+            JobTitle          = "Student"
+            UsageLocation     = $UsageLocation
+            AccountEnabled    = $true
+            PasswordProfile   = @{
                 Password                      = $password
                 ForceChangePasswordNextSignIn = $false
             }
+        }
+        if ($row.Form) { $newUserParams.Department = $row.Form.ToString().Trim() }
+
+        try {
+            $newUser = New-MgUser @newUserParams -ErrorAction Stop
+        } catch {
+            Write-Warning "Failed to create account for '$fullName': $($_.Exception.Message)"
+            $results[$sheetRow] = 'skipped'
+            $summaryFailed++
+            continue
+        }
 
         if ($available -gt 0) {
             Set-MgUserLicense -UserId $newUser.Id -AddLicenses @{ SkuId = $sku.SkuId } -RemoveLicenses @()
@@ -295,5 +307,6 @@ Write-Host "`n===================================="
 Write-Host "Created:            $summaryCreated" -ForegroundColor Yellow
 Write-Host "Already existing:   $summaryExisting" -ForegroundColor Green
 Write-Host "Skipped (dup rows): $summarySkippedDup"
+Write-Host "Failed to create:   $summaryFailed" -ForegroundColor Red
 Write-Host "Results written to: $OutputPath"
 Write-Host "===================================="
