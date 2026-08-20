@@ -104,18 +104,32 @@ foreach ($row in $rows) {
     $email = $email.ToString().Trim()
     if (-not $email) { continue }
 
-    $password = if ($mode -eq 'M') { $sharedPassword } else { New-EasyPassword }
+    $maxAttempts = if ($mode -eq 'M') { 1 } else { 5 }
+    $succeeded = $false
+    $lastError = $null
 
-    try {
-        Update-MgUser -UserId $email -PasswordProfile @{
-            Password                      = $password
-            ForceChangePasswordNextSignIn = $false
+    for ($attempt = 1; $attempt -le $maxAttempts -and -not $succeeded; $attempt++) {
+        $password = if ($mode -eq 'M') { $sharedPassword } else { New-EasyPassword }
+
+        try {
+            Update-MgUser -UserId $email -PasswordProfile @{
+                Password                      = $password
+                ForceChangePasswordNextSignIn = $false
+            } -ErrorAction Stop
+            Write-Host "$email  ->  $password" -ForegroundColor Green
+            $results += [pscustomobject]@{ Email = $email; Password = $password; Status = 'Reset' }
+            $succeeded = $true
+        } catch {
+            $lastError = $_.Exception.Message
+            if ($attempt -lt $maxAttempts) {
+                Write-Warning "Attempt $attempt failed for $email (retrying with a new password): $lastError"
+            }
         }
-        Write-Host "$email  ->  $password" -ForegroundColor Green
-        $results += [pscustomobject]@{ Email = $email; Password = $password; Status = 'Reset' }
-    } catch {
-        Write-Warning "Failed for $email : $($_.Exception.Message)"
-        $results += [pscustomobject]@{ Email = $email; Password = ''; Status = "Failed: $($_.Exception.Message)" }
+    }
+
+    if (-not $succeeded) {
+        Write-Warning "Failed for $email after $maxAttempts attempt(s): $lastError"
+        $results += [pscustomobject]@{ Email = $email; Password = ''; Status = "Failed: $lastError" }
     }
 }
 
