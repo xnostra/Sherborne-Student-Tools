@@ -145,6 +145,11 @@ function Get-NormalizedName {
     return (($Name -replace '\s+', ' ').Trim().ToLower())
 }
 
+function Get-UsernameFromUpn {
+    param([string]$Upn)
+    return ($Upn -replace "@$([regex]::Escape($Domain))$", '')
+}
+
 # --- Load rows ---
 $rows = Import-Excel -Path $XlsxPath
 
@@ -352,8 +357,9 @@ function Get-OrAddColumn {
 }
 
 $nextFreeCol = $ws.Dimension.End.Column + 1
-$upnColIndex = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Created UPN" -NextFreeCol ([ref]$nextFreeCol)
-$pwColIndex  = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Created Password" -NextFreeCol ([ref]$nextFreeCol)
+$upnColIndex  = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Created UPN" -NextFreeCol ([ref]$nextFreeCol)
+$userColIndex = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Username" -NextFreeCol ([ref]$nextFreeCol)
+$pwColIndex   = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Created Password" -NextFreeCol ([ref]$nextFreeCol)
 
 # --- Legend explaining the "Pupil Email Address" cell highlight colors ---
 $legendCol = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Legend (Pupil Email Address highlight)" -NextFreeCol ([ref]$nextFreeCol)
@@ -384,6 +390,7 @@ foreach ($sheetRow in $results.Keys) {
         $cell.Value = $result.Upn
         $cell.Style.Fill.PatternType = 'Solid'
         $cell.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::LightGreen)
+        $ws.Cells[$sheetRow, $userColIndex].Value = Get-UsernameFromUpn -Upn $result.Upn
     } elseif ($result -eq 'review') {
         $cell.Style.Fill.PatternType = 'Solid'
         $cell.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::Orange)
@@ -392,6 +399,7 @@ foreach ($sheetRow in $results.Keys) {
         $cell.Style.Fill.PatternType = 'Solid'
         $cell.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::Yellow)
         $ws.Cells[$sheetRow, $upnColIndex].Value = $result.Upn
+        $ws.Cells[$sheetRow, $userColIndex].Value = Get-UsernameFromUpn -Upn $result.Upn
         $ws.Cells[$sheetRow, $pwColIndex].Value = $result.Password
     }
 }

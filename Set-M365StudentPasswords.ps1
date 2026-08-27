@@ -72,6 +72,11 @@ function Get-CleanEmail {
     return $Text.Trim()
 }
 
+function Get-UsernameFromEmail {
+    param([string]$EmailAddress)
+    return $EmailAddress.Split('@')[0]
+}
+
 function New-EasyPassword {
     $words = @(
         "Tiger", "Panda", "Lion", "Bunny", "Star", "Moon", "Apple", "Ocean",
@@ -179,6 +184,12 @@ Please keep this password confidential.
         throw "File not found: $CsvPath"
     }
 
+    if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
+        Write-Host "Installing ImportExcel module (needed to read/write .xlsx files)..."
+        Install-Module ImportExcel -Scope CurrentUser -Force
+    }
+    Import-Module ImportExcel
+
     $rows = Import-DataFile -Path $CsvPath
     if ($rows.Count -eq 0) { throw "No rows found in $CsvPath." }
 
@@ -199,18 +210,105 @@ Please keep this password confidential.
         }
     }
 
+    # --- Prepare the output copy (always .xlsx, so results/highlighting match New-M365Students.ps1) ---
+    $outDir  = Split-Path -Parent (Resolve-Path $CsvPath)
+    $outName = [System.IO.Path]::GetFileNameWithoutExtension($CsvPath)
+    $outputPath = Join-Path $outDir "$outName - processed.xlsx"
+
+    if ($CsvPath -match '\.xlsx$') {
+        Copy-Item -Path $CsvPath -Destination $outputPath -Force
+    } else {
+        Remove-Item -Path $outputPath -ErrorAction SilentlyContinue
+        $rows | Export-Excel -Path $outputPath -WorksheetName "Sheet1"
+    }
+    Write-Host "Working on a copy: $outputPath" -ForegroundColor Cyan
+
+    # --- Reset passwords, tracking outcome per Excel row number (header = row 1) ---
     $results = @()
-    foreach ($row in $rows) {
+    $rowOutcomes = @{}   # sheetRow -> @{ Status; Username; Password }
+
+    for ($i = 0; $i -lt $rows.Count; $i++) {
+        $row = $rows[$i]
+        $sheetRow = $i + 2
+
         $rowEmail = $row.$emailCol
         if (-not $rowEmail) { continue }
         $rowEmail = $rowEmail.ToString().Trim()
         if (-not $rowEmail) { continue }
 
-        $results += Set-OneStudentPassword -TargetEmail $rowEmail -FixedPassword $sharedPassword
+        $result = Set-OneStudentPassword -TargetEmail $rowEmail -FixedPassword $sharedPassword
+        $results += $result
+
+        $rowOutcomes[$sheetRow] = @{
+            Status   = $result.Status
+            Username = Get-UsernameFromEmail -EmailAddress $rowEmail
+            Password = $result.Password
+        }
     }
 
-    $outputPath = Join-Path (Split-Path -Parent (Resolve-Path $CsvPath)) "$([System.IO.Path]::GetFileNameWithoutExtension($CsvPath)) - passwords.csv"
-    $results | Export-Csv -Path $outputPath -NoTypeInformation
+    # --- Write Username / New Password columns + highlighting back into the copy ---
+    $pkg = Open-ExcelPackage -Path $outputPath
+    $ws = $pkg.Workbook.Worksheets[1]
+
+    $headerCols = @{}
+    for ($c = 1; $c -le $ws.Dimension.End.Column; $c++) {
+        $headerCols[$ws.Cells[1, $c].Text] = $c
+    }
+    $emailColIndex = $headerCols[$emailCol]
+
+    function Get-OrAddColumn {
+        param($Worksheet, $HeaderLookup, [string]$Title, [ref]$NextFreeCol)
+
+        if ($HeaderLookup.ContainsKey($Title)) { return $HeaderLookup[$Title] }
+
+        $col = $NextFreeCol.Value
+        $Worksheet.Cells[1, $col].Value = $Title
+        $HeaderLookup[$Title] = $col
+        $NextFreeCol.Value++
+        return $col
+    }
+
+    $nextFreeCol = $ws.Dimension.End.Column + 1
+    $userColIndex = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Username" -NextFreeCol ([ref]$nextFreeCol)
+    $pwColIndex   = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "New Password" -NextFreeCol ([ref]$nextFreeCol)
+
+    # --- Legend explaining the highlight colors ---
+    $legendCol = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Legend" -NextFreeCol ([ref]$nextFreeCol)
+    $ws.Cells[1, $legendCol].Style.Font.Bold = $true
+
+    $legendRows = @(
+        @{ Text = "Green  = password reset successfully"; Color = [System.Drawing.Color]::LightGreen }
+        @{ Text = "Orange = failed to reset (see console output)"; Color = [System.Drawing.Color]::Orange }
+        @{ Text = "No fill = skipped (blank email)"; Color = $null }
+    )
+    for ([int]$legendIdx = 0; $legendIdx -lt $legendRows.Count; $legendIdx++) {
+        $legendRowNum = 2 + $legendIdx
+        $legendCell = $ws.Cells[$legendRowNum, $legendCol]
+        $legendCell.Value = $legendRows[$legendIdx].Text
+        if ($legendRows[$legendIdx].Color) {
+            $legendCell.Style.Fill.PatternType = 'Solid'
+            $legendCell.Style.Fill.BackgroundColor.SetColor($legendRows[$legendIdx].Color)
+        }
+    }
+    $ws.Column($legendCol).Width = 45
+
+    foreach ($sheetRow in $rowOutcomes.Keys) {
+        $outcome = $rowOutcomes[$sheetRow]
+        $cell = $ws.Cells[$sheetRow, $emailColIndex]
+
+        $ws.Cells[$sheetRow, $userColIndex].Value = $outcome.Username
+
+        if ($outcome.Status -eq 'Reset') {
+            $cell.Style.Fill.PatternType = 'Solid'
+            $cell.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::LightGreen)
+            $ws.Cells[$sheetRow, $pwColIndex].Value = $outcome.Password
+        } else {
+            $cell.Style.Fill.PatternType = 'Solid'
+            $cell.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::Orange)
+        }
+    }
+
+    Close-ExcelPackage $pkg
 
     $succeededCount = ($results | Where-Object { $_.Status -eq 'Reset' }).Count
     Write-Host "`n===================================="
