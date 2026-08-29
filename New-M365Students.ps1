@@ -258,6 +258,57 @@ if ($emailNumber -notmatch '^[a-zA-Z0-9]+$') { throw "The value can only contain
 $usedUpns = New-Object 'System.Collections.Generic.HashSet[string]'
 
 # --- Process rows, tracking outcomes per Excel row number (header = row 1) ---
+function New-StudentAccount {
+    param([string]$FullName, $Row, [System.Collections.Generic.HashSet[string]]$UsedUpns)
+
+    $forename = $Row.Forename
+    $surname  = $Row.Surname
+    $upn = New-StudentUpn -Forename $forename -Surname $surname -Number $emailNumber -UsedThisRun $UsedUpns
+    $UsedUpns.Add($upn) | Out-Null
+    $password = New-StudentPassword -Forename $forename -Surname $surname
+    $mailNickname = $upn.Split('@')[0]
+
+    Write-Host "New UPN:  $upn"
+    Write-Host "Password: $password"
+    Write-Host "License:  $($sku.SkuPartNumber)"
+
+    if (-not $WhatIfOnly) {
+        if ($script:available -le 0) {
+            Write-Warning "No available '$($sku.SkuPartNumber)' licenses left - creating account without a license."
+        }
+
+        $newUserParams = @{
+            DisplayName       = $FullName
+            GivenName         = $forename
+            Surname           = $surname
+            UserPrincipalName = $upn
+            MailNickname      = $mailNickname
+            JobTitle          = "Student"
+            UsageLocation     = $UsageLocation
+            AccountEnabled    = $true
+            PasswordProfile   = @{
+                Password                      = $password
+                ForceChangePasswordNextSignIn = $false
+            }
+        }
+        if ($Row.Form) { $newUserParams.Department = $Row.Form.ToString().Trim() }
+
+        try {
+            $newUser = New-MgUser @newUserParams -ErrorAction Stop
+        } catch {
+            Write-Warning "Failed to create account for '$FullName': $($_.Exception.Message)"
+            return [pscustomobject]@{ Status = 'failed' }
+        }
+
+        if ($script:available -gt 0) {
+            Set-MgUserLicense -UserId $newUser.Id -AddLicenses @{ SkuId = $sku.SkuId } -RemoveLicenses @()
+            $script:available--
+        }
+    }
+
+    return [pscustomobject]@{ Status = 'created'; Upn = $upn; Password = $password }
+}
+
 function Get-StudentMatchInfo {
     param($TenantUser, $Row, [string]$FullName)
 
@@ -373,55 +424,63 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
         continue
     }
 
-    $forename = $row.Forename
-    $surname  = $row.Surname
-    $upn = New-StudentUpn -Forename $forename -Surname $surname -Number $emailNumber -UsedThisRun $usedUpns
-    $usedUpns.Add($upn) | Out-Null
-    $password = New-StudentPassword -Forename $forename -Surname $surname
-    $mailNickname = $upn.Split('@')[0]
-
-    Write-Host "New UPN:  $upn"
-    Write-Host "Password: $password"
-    Write-Host "License:  $($sku.SkuPartNumber)"
-
-    if (-not $WhatIfOnly) {
-        if ($available -le 0) {
-            Write-Warning "No available '$($sku.SkuPartNumber)' licenses left - creating account without a license."
-        }
-
-        $newUserParams = @{
-            DisplayName       = $fullName
-            GivenName         = $forename
-            Surname           = $surname
-            UserPrincipalName = $upn
-            MailNickname      = $mailNickname
-            JobTitle          = "Student"
-            UsageLocation     = $UsageLocation
-            AccountEnabled    = $true
-            PasswordProfile   = @{
-                Password                      = $password
-                ForceChangePasswordNextSignIn = $false
-            }
-        }
-        if ($row.Form) { $newUserParams.Department = $row.Form.ToString().Trim() }
-
-        try {
-            $newUser = New-MgUser @newUserParams -ErrorAction Stop
-        } catch {
-            Write-Warning "Failed to create account for '$fullName': $($_.Exception.Message)"
-            $results[$sheetRow] = 'skipped'
-            $summaryFailed++
-            continue
-        }
-
-        if ($available -gt 0) {
-            Set-MgUserLicense -UserId $newUser.Id -AddLicenses @{ SkuId = $sku.SkuId } -RemoveLicenses @()
-            $available--
-        }
+    $creation = New-StudentAccount -FullName $fullName -Row $row -UsedUpns $usedUpns
+    if ($creation.Status -eq 'failed') {
+        $results[$sheetRow] = 'skipped'
+        $summaryFailed++
+        continue
     }
 
-    $results[$sheetRow] = @{ Status = 'created'; Upn = $upn; Password = $password }
+    $results[$sheetRow] = @{ Status = 'created'; Upn = $creation.Upn; Password = $creation.Password }
     $summaryCreated++
+}
+
+# --- Optional: force-create accounts for rows flagged for manual review ---
+$reviewRowsList = @()
+foreach ($sheetRow in $results.Keys) {
+    if ($results[$sheetRow] -eq 'review') {
+        $rowIdx = $sheetRow - 2
+        $reviewRowsList += [pscustomobject]@{ SheetRow = $sheetRow; Row = $rows[$rowIdx]; FullName = $rows[$rowIdx].'Full Name'.Trim() }
+    }
+}
+
+if ($reviewRowsList.Count -gt 0) {
+    Write-Host "`n===================================="
+    Write-Host "The following $($reviewRowsList.Count) row(s) were flagged for manual review:" -ForegroundColor DarkYellow
+    foreach ($r in ($reviewRowsList | Sort-Object SheetRow)) { Write-Host "  Row $($r.SheetRow): $($r.FullName)" }
+
+    if ($WhatIfOnly) {
+        Write-Host "`n(Running with -WhatIfOnly, so skipping the force-create step.)" -ForegroundColor Cyan
+    } else {
+        Write-Host "`nIf any of these should just be created as brand-new accounts anyway (ignoring the match check above),"
+        Write-Host "paste their Full Names below - one per line, exactly as shown above. Press Enter on a blank line when done."
+        Write-Host "(Leave blank and press Enter immediately to skip this step.)" -ForegroundColor Cyan
+
+        $pastedNames = New-Object System.Collections.Generic.List[string]
+        while ($true) {
+            $line = Read-Host
+            if ([string]::IsNullOrWhiteSpace($line)) { break }
+            $pastedNames.Add($line.Trim())
+        }
+
+        foreach ($pastedName in $pastedNames) {
+            $match = $reviewRowsList | Where-Object { (Get-NormalizedName $_.FullName) -eq (Get-NormalizedName $pastedName) } | Select-Object -First 1
+            if (-not $match) {
+                Write-Warning "Couldn't find a flagged row matching '$pastedName' - skipping."
+                continue
+            }
+
+            Write-Host "`nForce-creating: $($match.FullName) (Row $($match.SheetRow))" -ForegroundColor Yellow
+            $creation = New-StudentAccount -FullName $match.FullName -Row $match.Row -UsedUpns $usedUpns
+            if ($creation.Status -eq 'failed') {
+                continue
+            }
+
+            $results[$match.SheetRow] = @{ Status = 'created'; Upn = $creation.Upn; Password = $creation.Password }
+            $summaryCreated++
+            $summaryReview--
+        }
+    }
 }
 
 # --- Write results + highlighting back into the copy ---
