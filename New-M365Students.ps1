@@ -150,6 +150,67 @@ function Get-UsernameFromUpn {
     return ($Upn -replace "@$([regex]::Escape($Domain))$", '')
 }
 
+function Get-LevenshteinDistance {
+    param([string]$A, [string]$B)
+    $lenA = $A.Length; $lenB = $B.Length
+    $d = New-Object 'int[,]' ($lenA + 1), ($lenB + 1)
+    for ($i = 0; $i -le $lenA; $i++) { $d[$i, 0] = $i }
+    for ($j = 0; $j -le $lenB; $j++) { $d[0, $j] = $j }
+    for ($i = 1; $i -le $lenA; $i++) {
+        for ($j = 1; $j -le $lenB; $j++) {
+            $cost = if ($A[$i - 1] -eq $B[$j - 1]) { 0 } else { 1 }
+            $deleteCost     = $d[($i - 1), $j] + 1
+            $insertCost     = $d[$i, ($j - 1)] + 1
+            $substituteCost = $d[($i - 1), ($j - 1)] + $cost
+            $d[$i, $j] = [Math]::Min([Math]::Min($deleteCost, $insertCost), $substituteCost)
+        }
+    }
+    return $d[$lenA, $lenB]
+}
+
+# Compares two already-normalized (lowercase, single-spaced) names and returns how confident a match is:
+#   'exact' - identical
+#   'fuzzy' - almost certainly the same person: one name is missing/has extra middle name(s) compared to the
+#             other (in the same order), or the two strings are a close spelling/spacing match overall
+#   'none'  - not similar enough to trust automatically
+function Get-NameMatchQuality {
+    param([string]$NormA, [string]$NormB)
+
+    if ($NormA -eq $NormB) { return 'exact' }
+    if (-not $NormA -or -not $NormB) { return 'none' }
+
+    $tokensA = @($NormA -split ' ' | Where-Object { $_ })
+    $tokensB = @($NormB -split ' ' | Where-Object { $_ })
+    $shorter = if ($tokensA.Count -le $tokensB.Count) { $tokensA } else { $tokensB }
+    $longer  = if ($tokensA.Count -le $tokensB.Count) { $tokensB } else { $tokensA }
+
+    # Missing/extra middle name(s): every token in the shorter name appears in the longer name, in the same
+    # order (allow up to 2 tokens missing, e.g. a dropped middle name or two).
+    if ($shorter.Count -ge 2 -and ($longer.Count - $shorter.Count) -ge 1 -and ($longer.Count - $shorter.Count) -le 2) {
+        $isSubsequence = $true
+        $pos = 0
+        foreach ($tok in $shorter) {
+            $foundAt = -1
+            for ($k = $pos; $k -lt $longer.Count; $k++) {
+                if ($longer[$k] -eq $tok) { $foundAt = $k; break }
+            }
+            if ($foundAt -lt 0) { $isSubsequence = $false; break }
+            $pos = $foundAt + 1
+        }
+        if ($isSubsequence) { return 'fuzzy' }
+    }
+
+    # Otherwise, fall back to overall edit-distance similarity (catches typos, missing/extra spaces, etc.)
+    $maxLen = [Math]::Max($NormA.Length, $NormB.Length)
+    if ($maxLen -ge 6) {
+        $distance = Get-LevenshteinDistance -A $NormA -B $NormB
+        $ratio = 1 - ($distance / $maxLen)
+        if ($ratio -ge 0.82) { return 'fuzzy' }
+    }
+
+    return 'none'
+}
+
 # --- Load rows ---
 $rows = Import-Excel -Path $XlsxPath
 
@@ -197,19 +258,19 @@ if ($emailNumber -notmatch '^[a-zA-Z0-9]+$') { throw "The value can only contain
 $usedUpns = New-Object 'System.Collections.Generic.HashSet[string]'
 
 # --- Process rows, tracking outcomes per Excel row number (header = row 1) ---
-function Test-SameStudent {
+function Get-StudentMatchInfo {
     param($TenantUser, $Row, [string]$FullName)
 
-    # Full Name must match (case/whitespace-insensitive) - this is the only reliable identifier we have.
-    if ((Get-NormalizedName $TenantUser.DisplayName) -ne (Get-NormalizedName $FullName)) { return $false }
+    $quality = Get-NameMatchQuality -NormA (Get-NormalizedName $TenantUser.DisplayName) -NormB (Get-NormalizedName $FullName)
 
-    # If both sides know the Form, it must agree too - catches same-name-different-student cases
-    # (e.g. siblings, or two unrelated students who happen to share a name in different years).
+    # If both sides know the Form, it should agree too - a mismatch usually means the tenant record is stale
+    # (e.g. the student moved up a Form) rather than a genuinely different student.
+    $formMatches = $true
     if ($Row.Form -and $TenantUser.Department -and ($Row.Form.ToString().Trim() -ne $TenantUser.Department.Trim())) {
-        return $false
+        $formMatches = $false
     }
 
-    return $true
+    return [pscustomobject]@{ NameQuality = $quality; FormMatches = $formMatches }
 }
 
 $results = @{}   # rowIndex (1-based, matching sheet row = index+2) -> 'created' | 'existing' | 'skipped' | 'review'
@@ -218,6 +279,8 @@ $summaryExisting = 0
 $summarySkippedDup = 0
 $summaryFailed = 0
 $summaryReview = 0
+$summaryFuzzy = 0
+$summaryFormMismatch = 0
 $seenRowKeys = @{}   # "name|form" -> first sheet row that used it, for true in-sheet duplicate rows
 
 for ($i = 0; $i -lt $rows.Count; $i++) {
@@ -245,11 +308,28 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
             $found = $null
         }
         if ($found) {
-            if (Test-SameStudent -TenantUser $found -Row $row -FullName $fullName) {
+            $match = Get-StudentMatchInfo -TenantUser $found -Row $row -FullName $fullName
+
+            if ($match.NameQuality -eq 'exact' -and $match.FormMatches) {
                 Write-Host "Existing account confirmed: $existingEmail" -ForegroundColor Green
                 $usedUpns.Add($existingEmail) | Out-Null
-                $results[$sheetRow] = @{ Status = 'existing'; Upn = $existingEmail }
+                $results[$sheetRow] = @{ Status = 'existing'; Upn = $existingEmail; MatchType = 'exact' }
                 $summaryExisting++
+                continue
+            } elseif ($match.NameQuality -eq 'exact' -and -not $match.FormMatches) {
+                Write-Warning "Existing account confirmed by name for '$fullName' ($existingEmail), but tenant Form '$($found.Department)' differs from sheet Form '$($row.Form)' - likely outdated, treating as existing."
+                $usedUpns.Add($existingEmail) | Out-Null
+                $results[$sheetRow] = @{ Status = 'existing'; Upn = $existingEmail; MatchType = 'form-mismatch' }
+                $summaryExisting++
+                $summaryFormMismatch++
+                continue
+            } elseif ($match.NameQuality -eq 'fuzzy') {
+                $noteSuffix = if (-not $match.FormMatches) { " (tenant Form '$($found.Department)' also differs from sheet Form '$($row.Form)')" } else { "" }
+                Write-Host "Existing account matched by close name: $existingEmail (tenant name '$($found.DisplayName)')$noteSuffix - please spot-check." -ForegroundColor Cyan
+                $usedUpns.Add($existingEmail) | Out-Null
+                $results[$sheetRow] = @{ Status = 'existing'; Upn = $existingEmail; MatchType = 'fuzzy' }
+                $summaryExisting++
+                $summaryFuzzy++
                 continue
             } else {
                 Write-Warning "Sheet lists '$existingEmail' for '$fullName' (form '$($row.Form)'), but that account belongs to '$($found.DisplayName)' (form '$($found.Department)') - this looks like a different student. Flagging for manual review instead of assuming they're the same."
@@ -264,18 +344,28 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
 
     # Extra duplicate safety net: display-name match already in the tenant
     $nameMatches = @(Get-MgUser -Filter "displayName eq '$($fullName.Replace("'", "''"))'" -Property DisplayName, UserPrincipalName, Department -All -ErrorAction SilentlyContinue)
-    $confirmedMatches = @($nameMatches | Where-Object { Test-SameStudent -TenantUser $_ -Row $row -FullName $fullName })
+    $confirmedMatches = @($nameMatches | Where-Object { (Get-StudentMatchInfo -TenantUser $_ -Row $row -FullName $fullName).FormMatches })
 
     if ($confirmedMatches.Count -eq 1) {
         $m = $confirmedMatches[0]
         Write-Host "Found existing account by name match: $($m.UserPrincipalName)" -ForegroundColor Green
         $usedUpns.Add($m.UserPrincipalName) | Out-Null
-        $results[$sheetRow] = @{ Status = 'existing'; Upn = $m.UserPrincipalName }
+        $results[$sheetRow] = @{ Status = 'existing'; Upn = $m.UserPrincipalName; MatchType = 'exact' }
         $summaryExisting++
         continue
+    } elseif ($nameMatches.Count -eq 1) {
+        # Exact display-name match, but the Form doesn't line up - most likely the tenant record is just
+        # stale (student moved up a Form), not a different student. Treat as existing, but flag it.
+        $m = $nameMatches[0]
+        Write-Warning "Found existing account '$($m.UserPrincipalName)' by exact name match for '$fullName', but tenant Form '$($m.Department)' differs from sheet Form '$($row.Form)' - likely outdated, treating as existing."
+        $usedUpns.Add($m.UserPrincipalName) | Out-Null
+        $results[$sheetRow] = @{ Status = 'existing'; Upn = $m.UserPrincipalName; MatchType = 'form-mismatch' }
+        $summaryExisting++
+        $summaryFormMismatch++
+        continue
     } elseif ($nameMatches.Count -gt 0) {
-        # Either multiple confirmed matches (shouldn't normally happen) or matches whose Form
-        # didn't line up - too risky to guess, so leave it for a human to check.
+        # Multiple accounts share this exact name and none has a matching Form - too risky to guess,
+        # so leave it for a human to check.
         $candidates = ($nameMatches | ForEach-Object { "$($_.UserPrincipalName) (form '$($_.Department)')" }) -join '; '
         Write-Warning "Found tenant account(s) named '$fullName' but couldn't confirm a match for form '$($row.Form)': $candidates. Flagging for manual review; no account will be created automatically."
         $results[$sheetRow] = 'review'
@@ -368,6 +458,8 @@ $ws.Cells[1, $legendCol].Style.Font.Bold = $true
 $legendRows = @(
     @{ Text = "Yellow = new account created this run"; Color = [System.Drawing.Color]::Yellow }
     @{ Text = "Green  = existing account confirmed (already had one)"; Color = [System.Drawing.Color]::LightGreen }
+    @{ Text = "Light Blue = existing account matched by a close/fuzzy name - please spot-check"; Color = [System.Drawing.Color]::LightSkyBlue }
+    @{ Text = "Khaki  = existing account confirmed by name, but tenant Form looks outdated"; Color = [System.Drawing.Color]::Khaki }
     @{ Text = "Orange = needs manual review (name/email mismatch found)"; Color = [System.Drawing.Color]::Orange }
     @{ Text = "No fill = duplicate row, skipped"; Color = $null }
 )
@@ -389,7 +481,12 @@ foreach ($sheetRow in $results.Keys) {
     if ($result -is [hashtable] -and $result.Status -eq 'existing') {
         $cell.Value = $result.Upn
         $cell.Style.Fill.PatternType = 'Solid'
-        $cell.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::LightGreen)
+        $color = switch ($result.MatchType) {
+            'fuzzy'         { [System.Drawing.Color]::LightSkyBlue }
+            'form-mismatch' { [System.Drawing.Color]::Khaki }
+            default         { [System.Drawing.Color]::LightGreen }
+        }
+        $cell.Style.Fill.BackgroundColor.SetColor($color)
         $ws.Cells[$sheetRow, $userColIndex].Value = Get-UsernameFromUpn -Upn $result.Upn
     } elseif ($result -eq 'review') {
         $cell.Style.Fill.PatternType = 'Solid'
@@ -409,6 +506,8 @@ Close-ExcelPackage $pkg
 Write-Host "`n===================================="
 Write-Host "Created:            $summaryCreated" -ForegroundColor Yellow
 Write-Host "Already existing:   $summaryExisting" -ForegroundColor Green
+Write-Host "  (of which, fuzzy name match - spot-check): $summaryFuzzy" -ForegroundColor Cyan
+Write-Host "  (of which, Form looked outdated):          $summaryFormMismatch" -ForegroundColor DarkYellow
 Write-Host "Skipped (dup rows): $summarySkippedDup"
 Write-Host "Needs manual review: $summaryReview" -ForegroundColor DarkYellow
 Write-Host "Failed to create:   $summaryFailed" -ForegroundColor Red
