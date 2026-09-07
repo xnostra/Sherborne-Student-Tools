@@ -29,7 +29,10 @@ function Test-UpnTaken {
 
     if ($UsedThisRun.Contains($Upn)) { return $true }
     try { return $null -ne (Get-MgUser -UserId $Upn -ErrorAction Stop) }
-    catch { return $false }
+    catch {
+        if ([int]$_.Exception.ResponseStatusCode -eq 404) { return $false }
+        throw
+    }
 }
 
 function New-StudentUpn {
@@ -111,25 +114,39 @@ $confirm = (Read-Host "Create accounts for the pasted names that do not already 
 if ($confirm -ne 'YES') { Write-Host 'No accounts were created.' -ForegroundColor Yellow; exit 0 }
 
 $usedUpns = New-Object 'System.Collections.Generic.HashSet[string]'
-$results = @()
+$results = New-Object 'System.Collections.Generic.List[object]'
+$claimedAccounts = @{}
 foreach ($fullName in $uniqueNames) {
     $escapedName = $fullName.Replace("'", "''")
-    $matches = @(Get-MgUser -Filter "displayName eq '$escapedName'" -Property DisplayName,UserPrincipalName -All -ErrorAction SilentlyContinue)
+    try { $matches = @(Get-MgUser -Filter "displayName eq '$escapedName'" -Property DisplayName,UserPrincipalName -All -ErrorAction Stop) }
+    catch { throw "Microsoft Graph lookup failed for '$fullName': $($_.Exception.Message)" }
     if ($matches.Count -gt 0) {
-        $results += [pscustomobject]@{ Name = $fullName; Email = ($matches[0].UserPrincipalName); Status = 'Already exists - skipped' }
+        if ($matches.Count -gt 1) {
+            $results.Add([pscustomobject]@{ Name = $fullName; Email = ''; Status = 'Manual review - multiple exact matches' })
+            Write-Warning "Multiple exact Microsoft accounts found for '$fullName'; no account was changed."
+            continue
+        }
+        $accountKey = $matches[0].UserPrincipalName.ToLowerInvariant()
+        if ($claimedAccounts.ContainsKey($accountKey)) {
+            $results.Add([pscustomobject]@{ Name = $fullName; Email = ''; Status = 'Manual review - account already claimed' })
+            Write-Warning "Account '$($matches[0].UserPrincipalName)' was already matched to '$($claimedAccounts[$accountKey])'."
+            continue
+        }
+        $claimedAccounts[$accountKey] = $fullName
+        $results.Add([pscustomobject]@{ Name = $fullName; Email = $matches[0].UserPrincipalName; Status = 'Already exists - skipped' })
         Write-Host "Existing account found: $fullName ($($matches[0].UserPrincipalName))" -ForegroundColor Green
         continue
     }
 
     $parts = @($fullName -split '\s+' | Where-Object { $_ })
     if ($parts.Count -lt 2) {
-        $results += [pscustomobject]@{ Name = $fullName; Email = ''; Status = 'Not created - enter at least first and last name' }
+        $results.Add([pscustomobject]@{ Name = $fullName; Email = ''; Status = 'Not created - enter at least first and last name' })
         Write-Warning "Skipped '$fullName': enter at least a first and last name."
         continue
     }
 
     if ($available -le 0) {
-        $results += [pscustomobject]@{ Name = $fullName; Email = ''; Status = 'Not created - no selected license seats remain' }
+        $results.Add([pscustomobject]@{ Name = $fullName; Email = ''; Status = 'Not created - no selected license seats remain' })
         Write-Warning "Skipped '$fullName': no '$($sku.SkuPartNumber)' license seats remain."
         continue
     }
@@ -140,17 +157,17 @@ foreach ($fullName in $uniqueNames) {
     try {
         $newUser = New-MgUser -DisplayName $fullName -GivenName $parts[0] -Surname (($parts | Select-Object -Skip 1) -join ' ') -UserPrincipalName $upn -MailNickname $upn.Split('@')[0] -JobTitle 'Student' -UsageLocation $UsageLocation -AccountEnabled:$true -PasswordProfile @{ Password = $password; ForceChangePasswordNextSignIn = $false } -ErrorAction Stop
     } catch {
-        $results += [pscustomobject]@{ Name = $fullName; Email = ''; Status = "Failed to create: $($_.Exception.Message)" }
+        $results.Add([pscustomobject]@{ Name = $fullName; Email = ''; Status = "Failed to create: $($_.Exception.Message)" })
         Write-Warning "Failed to create '$fullName': $($_.Exception.Message)"
         continue
     }
     try {
         Set-MgUserLicense -UserId $newUser.Id -AddLicenses @{ SkuId = $sku.SkuId } -RemoveLicenses @() -ErrorAction Stop
         $available--
-        $results += [pscustomobject]@{ Name = $fullName; Email = $upn; Status = "Created and licensed (password: $password)" }
+        $results.Add([pscustomobject]@{ Name = $fullName; Email = $upn; Status = "Created and licensed (password: $password)" })
         Write-Host "Created and licensed: $fullName ($upn)" -ForegroundColor Yellow
     } catch {
-        $results += [pscustomobject]@{ Name = $fullName; Email = $upn; Status = "Created but license failed: $($_.Exception.Message)" }
+        $results.Add([pscustomobject]@{ Name = $fullName; Email = $upn; Status = "Created but license failed: $($_.Exception.Message)" })
         Write-Warning "Created '$fullName' but could not assign the license: $($_.Exception.Message)"
     }
 }

@@ -96,7 +96,8 @@ function Test-UpnTaken {
         $existing = Get-MgUser -UserId $Upn -ErrorAction Stop
         return $null -ne $existing
     } catch {
-        return $false
+        if ([int]$_.Exception.ResponseStatusCode -eq 404) { return $false }
+        throw  # An unavailable directory is not evidence that a UPN is free.
     }
 }
 
@@ -176,8 +177,8 @@ function Get-LevenshteinDistance {
 function Get-NameMatchQuality {
     param([string]$NormA, [string]$NormB)
 
-    if ($NormA -eq $NormB) { return 'exact' }
     if (-not $NormA -or -not $NormB) { return 'none' }
+    if ($NormA -eq $NormB) { return 'exact' }
 
     $tokensA = @($NormA -split ' ' | Where-Object { $_ })
     $tokensB = @($NormB -split ' ' | Where-Object { $_ })
@@ -385,10 +386,11 @@ function Get-StudentMatchInfo {
 
     # If both sides know the Form, it should agree too - a mismatch usually means the tenant record is stale
     # (e.g. the student moved up a Form) rather than a genuinely different student.
-    $formMatches = $true
-    if ($Row.Form -and $TenantUser.Department -and ($Row.Form.ToString().Trim() -ne $TenantUser.Department.Trim())) {
-        $formMatches = $false
-    }
+    $sheetForm = "$($Row.Form)".Trim()
+    $tenantForm = "$($TenantUser.Department)".Trim()
+    $formMatches = -not [string]::IsNullOrWhiteSpace($sheetForm) -and
+                   -not [string]::IsNullOrWhiteSpace($tenantForm) -and
+                   ($sheetForm -eq $tenantForm)
 
     return [pscustomobject]@{ NameQuality = $quality; FormMatches = $formMatches }
 }
@@ -403,6 +405,23 @@ $summaryFuzzy = 0
 $summaryFormMismatch = 0
 $seenRowKeys = @{}   # "name|form" -> first sheet row that used it, for true in-sheet duplicate rows
 
+# Reject repeated supplied addresses before any account creation. With no stable
+# pupil ID, do not guess whether two rows are duplicate exports or two people.
+$emailRows = @{}
+$reviewReasons = @{}
+$claimedUpns = @{}
+for ($j = 0; $j -lt $rows.Count; $j++) {
+    $emailKey = "$($rows[$j].'Pupil Email Address')".Trim().ToLowerInvariant()
+    if ($emailKey) { $emailRows[$emailKey] = @($emailRows[$emailKey]) + ($j + 2) }
+}
+foreach ($emailKey in @($emailRows.Keys)) {
+    if ($emailRows[$emailKey].Count -gt 1) {
+        foreach ($r in $emailRows[$emailKey]) {
+            $reviewReasons[$r] = "Repeated supplied email; rows $($emailRows[$emailKey] -join ', ')"
+        }
+    }
+}
+
 for ($i = 0; $i -lt $rows.Count; $i++) {
     $row = $rows[$i]
     $sheetRow = $i + 2
@@ -411,7 +430,14 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
 
     Write-Host "`n--- Row $sheetRow`: $fullName ---"
 
+    if ($reviewReasons.ContainsKey($sheetRow)) {
+        $results[$sheetRow] = 'review'
+        $summaryReview++
+        continue
+    }
+
     $rowKey = "$key|$($row.Form)"
+
     if ($seenRowKeys.ContainsKey($rowKey)) {
         Write-Warning "Duplicate row: '$fullName' in form '$($row.Form)' already handled at row $($seenRowKeys[$rowKey]). Skipping this row."
         $results[$sheetRow] = 'skipped'
@@ -425,6 +451,7 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
         try {
             $found = Get-MgUser -UserId $existingEmail -Property DisplayName, UserPrincipalName, Department -ErrorAction Stop
         } catch {
+            if ([int]$_.Exception.ResponseStatusCode -ne 404) { throw }
             $found = $null
         }
         if ($found) {
@@ -432,24 +459,14 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
 
             if ($match.NameQuality -eq 'exact' -and $match.FormMatches) {
                 Write-Host "Existing account confirmed: $existingEmail" -ForegroundColor Green
+                $claim = $found.UserPrincipalName.ToLowerInvariant()
+                if ($claimedUpns.ContainsKey($claim)) {
+                    throw "Account $claim claimed by rows $($claimedUpns[$claim]) and $sheetRow; output not finalized."
+                }
+                $claimedUpns[$claim] = $sheetRow
                 $usedUpns.Add($existingEmail) | Out-Null
                 $results[$sheetRow] = @{ Status = 'existing'; Upn = $existingEmail; MatchType = 'exact' }
                 $summaryExisting++
-                continue
-            } elseif ($match.NameQuality -eq 'exact' -and -not $match.FormMatches) {
-                Write-Warning "Existing account confirmed by name for '$fullName' ($existingEmail), but tenant Form '$($found.Department)' differs from sheet Form '$($row.Form)' - likely outdated, treating as existing."
-                $usedUpns.Add($existingEmail) | Out-Null
-                $results[$sheetRow] = @{ Status = 'existing'; Upn = $existingEmail; MatchType = 'form-mismatch' }
-                $summaryExisting++
-                $summaryFormMismatch++
-                continue
-            } elseif ($match.NameQuality -eq 'fuzzy') {
-                $noteSuffix = if (-not $match.FormMatches) { " (tenant Form '$($found.Department)' also differs from sheet Form '$($row.Form)')" } else { "" }
-                Write-Host "Existing account matched by close name: $existingEmail (tenant name '$($found.DisplayName)')$noteSuffix - please spot-check." -ForegroundColor Cyan
-                $usedUpns.Add($existingEmail) | Out-Null
-                $results[$sheetRow] = @{ Status = 'existing'; Upn = $existingEmail; MatchType = 'fuzzy' }
-                $summaryExisting++
-                $summaryFuzzy++
                 continue
             } else {
                 Write-Warning "Sheet lists '$existingEmail' for '$fullName' (form '$($row.Form)'), but that account belongs to '$($found.DisplayName)' (form '$($found.Department)') - this looks like a different student. Flagging for manual review instead of assuming they're the same."
@@ -458,30 +475,28 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
                 continue
             }
         } else {
-            Write-Warning "Sheet lists '$existingEmail' but no such account exists in the tenant - treating as a new student."
+            $reviewReasons[$sheetRow] = 'Supplied email not found; verify identity before creating an account'
+            $results[$sheetRow] = 'review'
+            $summaryReview++
+            continue
         }
     }
 
     # Extra duplicate safety net: display-name match already in the tenant
-    $nameMatches = @(Get-MgUser -Filter "displayName eq '$($fullName.Replace("'", "''"))'" -Property DisplayName, UserPrincipalName, Department -All -ErrorAction SilentlyContinue)
+    $nameMatches = @(Get-MgUser -Filter "displayName eq '$($fullName.Replace("'", "''"))'" -Property DisplayName, UserPrincipalName, Department -All -ErrorAction Stop)
     $confirmedMatches = @($nameMatches | Where-Object { (Get-StudentMatchInfo -TenantUser $_ -Row $row -FullName $fullName).FormMatches })
 
-    if ($confirmedMatches.Count -eq 1) {
+    if ($nameMatches.Count -eq 1 -and $confirmedMatches.Count -eq 1) {
         $m = $confirmedMatches[0]
         Write-Host "Found existing account by name match: $($m.UserPrincipalName)" -ForegroundColor Green
+        $claim = $m.UserPrincipalName.ToLowerInvariant()
+        if ($claimedUpns.ContainsKey($claim)) {
+            throw "Account $claim claimed by rows $($claimedUpns[$claim]) and $sheetRow; output not finalized."
+        }
+        $claimedUpns[$claim] = $sheetRow
         $usedUpns.Add($m.UserPrincipalName) | Out-Null
         $results[$sheetRow] = @{ Status = 'existing'; Upn = $m.UserPrincipalName; MatchType = 'exact' }
         $summaryExisting++
-        continue
-    } elseif ($nameMatches.Count -eq 1) {
-        # Exact display-name match, but the Form doesn't line up - most likely the tenant record is just
-        # stale (student moved up a Form), not a different student. Treat as existing, but flag it.
-        $m = $nameMatches[0]
-        Write-Warning "Found existing account '$($m.UserPrincipalName)' by exact name match for '$fullName', but tenant Form '$($m.Department)' differs from sheet Form '$($row.Form)' - likely outdated, treating as existing."
-        $usedUpns.Add($m.UserPrincipalName) | Out-Null
-        $results[$sheetRow] = @{ Status = 'existing'; Upn = $m.UserPrincipalName; MatchType = 'form-mismatch' }
-        $summaryExisting++
-        $summaryFormMismatch++
         continue
     } elseif ($nameMatches.Count -gt 0) {
         # Multiple accounts share this exact name and none has a matching Form - too risky to guess,
@@ -504,53 +519,7 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
     $summaryCreated++
 }
 
-# --- Optional: force-create accounts for rows flagged for manual review ---
-$reviewRowsList = @()
-foreach ($sheetRow in $results.Keys) {
-    if ($results[$sheetRow] -eq 'review') {
-        $rowIdx = $sheetRow - 2
-        $reviewRowsList += [pscustomobject]@{ SheetRow = $sheetRow; Row = $rows[$rowIdx]; FullName = $rows[$rowIdx].'Full Name'.Trim() }
-    }
-}
-
-if ($reviewRowsList.Count -gt 0) {
-    Write-Host "`n===================================="
-    Write-Host "The following $($reviewRowsList.Count) row(s) were flagged for manual review:" -ForegroundColor DarkYellow
-    foreach ($r in ($reviewRowsList | Sort-Object SheetRow)) { Write-Host "  Row $($r.SheetRow): $($r.FullName)" }
-
-    if ($WhatIfOnly) {
-        Write-Host "`n(Running with -WhatIfOnly, so skipping the force-create step.)" -ForegroundColor Cyan
-    } else {
-        Write-Host "`nIf any of these should just be created as brand-new accounts anyway (ignoring the match check above),"
-        Write-Host "paste their Full Names below - one per line, exactly as shown above. Press Enter on a blank line when done."
-        Write-Host "(Leave blank and press Enter immediately to skip this step.)" -ForegroundColor Cyan
-
-        $pastedNames = New-Object System.Collections.Generic.List[string]
-        while ($true) {
-            $line = Read-Host
-            if ([string]::IsNullOrWhiteSpace($line)) { break }
-            $pastedNames.Add($line.Trim())
-        }
-
-        foreach ($pastedName in $pastedNames) {
-            $match = $reviewRowsList | Where-Object { (Get-NormalizedName $_.FullName) -eq (Get-NormalizedName $pastedName) } | Select-Object -First 1
-            if (-not $match) {
-                Write-Warning "Couldn't find a flagged row matching '$pastedName' - skipping."
-                continue
-            }
-
-            Write-Host "`nForce-creating: $($match.FullName) (Row $($match.SheetRow))" -ForegroundColor Yellow
-            $creation = New-StudentAccount -FullName $match.FullName -Row $match.Row -UsedUpns $usedUpns
-            if ($creation.Status -eq 'failed') {
-                continue
-            }
-
-            $results[$match.SheetRow] = @{ Status = 'created'; Upn = $creation.Upn; Password = $creation.Password }
-            $summaryCreated++
-            $summaryReview--
-        }
-    }
-}
+# Resolve review rows against the MIS/tenant before rerunning; no name-only override.
 
 # --- Write results + highlighting back into the copy ---
 $pkg = Open-ExcelPackage -Path $OutputPath
@@ -578,6 +547,8 @@ $nextFreeCol = $ws.Dimension.End.Column + 1
 $upnColIndex  = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Created UPN" -NextFreeCol ([ref]$nextFreeCol)
 $userColIndex = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Username" -NextFreeCol ([ref]$nextFreeCol)
 $pwColIndex   = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Created Password" -NextFreeCol ([ref]$nextFreeCol)
+$originalEmailCol = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Original supplied email" -NextFreeCol ([ref]$nextFreeCol)
+$reasonCol = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Match reason" -NextFreeCol ([ref]$nextFreeCol)
 $statusColIndex = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Account Status" -NextFreeCol ([ref]$nextFreeCol)
 
 # --- Legend explaining the "Pupil Email Address" cell highlight colors ---
@@ -607,6 +578,14 @@ $ws.Column($legendCol).Width = 55
 foreach ($sheetRow in $results.Keys) {
     $result = $results[$sheetRow]
     $cell = $ws.Cells[$sheetRow, $emailCol]
+    if (-not $ws.Cells[$sheetRow, $originalEmailCol].Text) {
+        $ws.Cells[$sheetRow, $originalEmailCol].Value = $rows[$sheetRow - 2].'Pupil Email Address'
+    }
+    # Remove stale generated results when processing a previously processed file.
+    $ws.Cells[$sheetRow, $userColIndex].Value = $null
+    $ws.Cells[$sheetRow, $upnColIndex].Value = $null
+    $ws.Cells[$sheetRow, $pwColIndex].Value = $null
+    $ws.Cells[$sheetRow, $reasonCol].Value = $null
 
     if ($result -is [hashtable] -and $result.Status -eq 'existing') {
         $ws.Cells[$sheetRow, $statusColIndex].Value = "Existing account confirmed"
@@ -620,6 +599,10 @@ foreach ($sheetRow in $results.Keys) {
         $cell.Style.Fill.BackgroundColor.SetColor($color)
         $ws.Cells[$sheetRow, $userColIndex].Value = Get-UsernameFromUpn -Upn $result.Upn
     } elseif ($result -eq 'review') {
+        $cell.Value = $null
+        $reason = $reviewReasons[$sheetRow]
+        if (-not $reason) { $reason = 'Identity not confirmed: name/form mismatch or ambiguous candidates' }
+        $ws.Cells[$sheetRow, $reasonCol].Value = $reason
         $ws.Cells[$sheetRow, $statusColIndex].Value = "Needs manual review"
         $cell.Style.Fill.PatternType = 'Solid'
         $cell.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::Orange)

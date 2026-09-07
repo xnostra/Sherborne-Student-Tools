@@ -156,11 +156,13 @@ if ($NamesBase64) {
                 $user = Get-MgUser -UserId $email -Property DisplayName,UserPrincipalName -ErrorAction Stop
                 $resolved += [pscustomobject]@{ Lookup = $lookup; Email = $user.UserPrincipalName; Status = 'Matched' }
             } catch {
+                if ([int]$_.Exception.ResponseStatusCode -ne 404) { throw }
                 $resolved += [pscustomobject]@{ Lookup = $lookup; Email = ''; Status = 'Skipped - email not found' }
             }
         } else {
             $escapedName = $lookup.Replace("'", "''")
-            $matches = @(Get-MgUser -Filter "displayName eq '$escapedName'" -Property DisplayName,UserPrincipalName -All -ErrorAction SilentlyContinue)
+            try { $matches = @(Get-MgUser -Filter "displayName eq '$escapedName'" -Property DisplayName,UserPrincipalName -All -ErrorAction Stop) }
+            catch { throw "Microsoft Graph lookup failed for '$lookup': $($_.Exception.Message)" }
             if ($matches.Count -eq 1) {
                 $resolved += [pscustomobject]@{ Lookup = $lookup; Email = $matches[0].UserPrincipalName; Status = 'Matched' }
             } elseif ($matches.Count -gt 1) {

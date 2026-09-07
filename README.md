@@ -86,6 +86,12 @@ For a single account, a copy/paste-ready email (To/Subject/Body) is printed and 
 - `.xlsx` input requires the `ImportExcel` module - installed automatically on first use if missing.
 - A Global Admin / User Administrator account to sign in with.
 
+## Matching and safety rules
+
+The bulk importer treats MIS exports as untrusted input. Repeated pupil email addresses are rejected before Microsoft 365 matching, and one Microsoft account can be claimed by only one input row in a run. Exact name and form agreement are required for automatic confirmation. Fuzzy names, missing or conflicting forms, multiple directory matches, and directory errors remain manual-review outcomes.
+
+Review rows preserve the original supplied value separately and do not present it as a confirmed account. Account creation and licensing are reported separately, so a partially completed row is visible and can be repaired without rerunning the whole class.
+
 ## Repository
 
 **One-Liner**: `irm https://raw.githubusercontent.com/xnostra/Sherborne-Student-Tools/master/invoke-studenttoolkit.ps1 | iex`
