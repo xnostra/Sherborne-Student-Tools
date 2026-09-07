@@ -234,19 +234,40 @@ foreach ($name in ($nameCounts.Keys | Where-Object { $nameCounts[$_] -gt 1 })) {
 # --- Ask for the license and the email number up front ---
 Connect-MgGraph -Scopes "User.ReadWrite.All", "Directory.ReadWrite.All", "Organization.Read.All"
 
-$skus = Get-MgSubscribedSku | Where-Object { ($_.PrepaidUnits.Enabled - $_.ConsumedUnits) -gt 0 }
+$studentA5SkuPartNumbers = @(
+    # Current Microsoft 365 Education A5 student entitlement.
+    'M365EDU_A5_STUUSEBNFT',
+    # Older/alternative A5 student subscriptions that a tenant may still have.
+    'M365EDU_A5_STUDENT',
+    'M365EDU_A5_NOPSTNCONF_STUUSEBNFT',
+    'M365EDU_A5_NOPSTNCONF_STUDENT',
+    'ENTERPRISEPREMIUM_STUUSEBNFT',
+    'ENTERPRISEPREMIUM_STUDENT',
+    'ENTERPRISEPREMIUM_NOPSTNCONF_STUUSEBNFT',
+    'ENTERPRISEPREMIUM_NOPSTNCONF_STUDENT'
+)
+
+$allSkus = @(Get-MgSubscribedSku -All)
+$studentA5Skus = @($allSkus | Where-Object { $studentA5SkuPartNumbers -contains $_.SkuPartNumber })
+$skus = @($allSkus | Where-Object { ($_.PrepaidUnits.Enabled - $_.ConsumedUnits) -gt 0 })
 if (-not $skus) { throw "No licenses with available seats were found in this tenant." }
 
 Write-Host "`nAvailable licenses in this tenant:"
 for ($i = 0; $i -lt $skus.Count; $i++) {
     $s = $skus[$i]
     $free = $s.PrepaidUnits.Enabled - $s.ConsumedUnits
-    Write-Host "  [$i] $($s.SkuPartNumber)  (available: $free)"
+    $label = if ($s.SkuPartNumber -eq 'M365EDU_A5_STUUSEBNFT') { 'Microsoft 365 A5 for Students (Student Use Benefit)' } else { $s.SkuPartNumber }
+    Write-Host "  [$i] $label  (available: $free)"
 }
-$suggested = 0..($skus.Count - 1) | Where-Object { $skus[$_].SkuPartNumber -match 'A5' -and $skus[$_].SkuPartNumber -match 'STU' }
-if ($suggested) { Write-Host "`n  (Looks like the A5 for Students SKU might be [$($suggested[0])])" -ForegroundColor Yellow }
+$suggested = 0..($skus.Count - 1) | Where-Object { $studentA5SkuPartNumbers -contains $skus[$_].SkuPartNumber }
+if (-not $suggested -and $studentA5Skus) {
+    $a5Status = $studentA5Skus | ForEach-Object { "$($_.SkuPartNumber): $($_.PrepaidUnits.Enabled - $_.ConsumedUnits) available" }
+    throw "Microsoft 365 A5 for Students was found, but it has no available seats ($($a5Status -join '; ')). Free or buy a seat before creating students."
+}
+if ($suggested) { Write-Host "`n  (Recommended: [$($suggested[0])] Microsoft 365 A5 for Students)" -ForegroundColor Yellow }
 
-$choice = Read-Host "`nEnter the number of the A5 Student license to assign"
+$choice = Read-Host "`nEnter the number of the A5 Student license to assign (press Enter for the recommended license)"
+if ([string]::IsNullOrWhiteSpace($choice) -and $suggested) { $choice = $suggested[0] }
 $sku = $skus[[int]$choice]
 if (-not $sku) { throw "Invalid selection." }
 $available = $sku.PrepaidUnits.Enabled - $sku.ConsumedUnits
