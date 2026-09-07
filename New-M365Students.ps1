@@ -53,6 +53,9 @@ param(
     [switch]$WhatIfOnly
 )
 
+$ToolkitVersion = '2026.09.07.4'
+Write-Host "Sherborne Student Toolkit $ToolkitVersion" -ForegroundColor Cyan
+
 function Test-SherborneToolAccess {
     try {
         Invoke-WebRequest -Uri "https://raw.githubusercontent.com/xnostra/Sherborne-Student-Tools/master/README.md" -UseBasicParsing -TimeoutSec 8 -ErrorAction Stop | Out-Null
