@@ -92,6 +92,8 @@ The bulk importer treats MIS exports as untrusted input. Repeated pupil email ad
 
 Review rows preserve the original supplied value separately and do not present it as a confirmed account. Account creation and licensing are reported separately, so a partially completed row is visible and can be repaired without rerunning the whole class.
 
+Every newly created account is automatically added to the Microsoft 365 group `BH PREP STUDENTS`. The toolkit verifies that exactly one group with that name exists before creating accounts and reports any membership failure separately.
+
 ## Repository
 
 **One-Liner**: `irm https://raw.githubusercontent.com/xnostra/Sherborne-Student-Tools/master/invoke-studenttoolkit.ps1 | iex`

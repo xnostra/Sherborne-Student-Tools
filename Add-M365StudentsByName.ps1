@@ -77,7 +77,15 @@ foreach ($name in $names) {
 Write-Host "`nPasted students to check:" -ForegroundColor Cyan
 for ($i = 0; $i -lt $uniqueNames.Count; $i++) { Write-Host "  [$($i + 1)] $($uniqueNames[$i])" }
 
-Connect-MgGraph -Scopes 'User.ReadWrite.All', 'Directory.ReadWrite.All', 'Organization.Read.All'
+Connect-MgGraph -Scopes 'User.ReadWrite.All', 'Directory.ReadWrite.All', 'Organization.Read.All', 'Group.Read.All', 'GroupMember.ReadWrite.All'
+
+$targetGroupName = 'BH PREP STUDENTS'
+$escapedTargetGroupName = $targetGroupName.Replace("'", "''")
+$targetGroups = @(Get-MgGroup -Filter "displayName eq '$escapedTargetGroupName'" -Property Id,DisplayName -All -ErrorAction Stop)
+if ($targetGroups.Count -eq 0) { throw "Required Microsoft 365 group '$targetGroupName' was not found. No accounts will be created." }
+if ($targetGroups.Count -gt 1) { throw "More than one Microsoft 365 group is named '$targetGroupName'. Rename the duplicates before creating accounts." }
+$targetGroup = $targetGroups[0]
+Write-Host "New accounts will be added to: $targetGroupName" -ForegroundColor Cyan
 
 $studentA5SkuPartNumbers = @('M365EDU_A5_STUUSEBNFT', 'M365EDU_A5_STUDENT', 'M365EDU_A5_NOPSTNCONF_STUUSEBNFT', 'M365EDU_A5_NOPSTNCONF_STUDENT', 'ENTERPRISEPREMIUM_STUUSEBNFT', 'ENTERPRISEPREMIUM_STUDENT', 'ENTERPRISEPREMIUM_NOPSTNCONF_STUUSEBNFT', 'ENTERPRISEPREMIUM_NOPSTNCONF_STUDENT')
 $skus = @(Get-MgSubscribedSku -All | Where-Object { (Get-AssignableSeatCount $_) -gt 0 })
@@ -164,12 +172,20 @@ foreach ($fullName in $uniqueNames) {
     try {
         Set-MgUserLicense -UserId $newUser.Id -AddLicenses @{ SkuId = $sku.SkuId } -RemoveLicenses @() -ErrorAction Stop
         $available--
-        $results.Add([pscustomobject]@{ Name = $fullName; Email = $upn; Status = "Created and licensed (password: $password)" })
-        Write-Host "Created and licensed: $fullName ($upn)" -ForegroundColor Yellow
+        $licenseStatus = 'licensed'
     } catch {
-        $results.Add([pscustomobject]@{ Name = $fullName; Email = $upn; Status = "Created but license failed: $($_.Exception.Message)" })
         Write-Warning "Created '$fullName' but could not assign the license: $($_.Exception.Message)"
+        $licenseStatus = 'license failed'
     }
+    try {
+        New-MgGroupMemberByRef -GroupId $targetGroup.Id -OdataId "https://graph.microsoft.com/v1.0/directoryObjects/$($newUser.Id)" -ErrorAction Stop
+        $groupStatus = "added to $targetGroupName"
+    } catch {
+        $groupStatus = 'group assignment failed'
+        Write-Warning "Created '$fullName' but could not add it to '$targetGroupName': $($_.Exception.Message)"
+    }
+    $results.Add([pscustomobject]@{ Name = $fullName; Email = $upn; Status = "Created; $licenseStatus; $groupStatus (password: $password)" })
+    Write-Host "Created: $fullName ($upn); $licenseStatus; $groupStatus" -ForegroundColor Yellow
 }
 
 Write-Host "`nResults:" -ForegroundColor Cyan

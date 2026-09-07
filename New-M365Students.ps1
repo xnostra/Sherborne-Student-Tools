@@ -53,7 +53,7 @@ param(
     [switch]$WhatIfOnly
 )
 
-$ToolkitVersion = '2026.09.07.6'
+$ToolkitVersion = '2026.09.07.7'
 Write-Host "Sherborne Student Toolkit $ToolkitVersion" -ForegroundColor Cyan
 
 function Test-SherborneToolAccess {
@@ -265,7 +265,15 @@ foreach ($name in ($nameCounts.Keys | Where-Object { $nameCounts[$_] -gt 1 })) {
 }
 
 # --- Ask for the license and the email number up front ---
-Connect-MgGraph -Scopes "User.ReadWrite.All", "Directory.ReadWrite.All", "Organization.Read.All"
+Connect-MgGraph -Scopes "User.ReadWrite.All", "Directory.ReadWrite.All", "Organization.Read.All", "Group.Read.All", "GroupMember.ReadWrite.All"
+
+$targetGroupName = 'BH PREP STUDENTS'
+$escapedTargetGroupName = $targetGroupName.Replace("'", "''")
+$targetGroups = @(Get-MgGroup -Filter "displayName eq '$escapedTargetGroupName'" -Property Id, DisplayName -All -ErrorAction Stop)
+if ($targetGroups.Count -eq 0) { throw "Required Microsoft 365 group '$targetGroupName' was not found. No accounts will be created." }
+if ($targetGroups.Count -gt 1) { throw "More than one Microsoft 365 group is named '$targetGroupName'. Rename the duplicates before creating accounts." }
+$targetGroup = $targetGroups[0]
+Write-Host "New accounts will be added to: $targetGroupName" -ForegroundColor Cyan
 
 function Get-AssignableSeatCount {
     param($SubscribedSku)
@@ -380,13 +388,26 @@ function New-StudentAccount {
             return [pscustomobject]@{ Status = 'failed' }
         }
 
+        $groupAdded = $true
+        try {
+            New-MgGroupMemberByRef -GroupId $targetGroup.Id -OdataId "https://graph.microsoft.com/v1.0/directoryObjects/$($newUser.Id)" -ErrorAction Stop
+            Write-Host "Added to group: $targetGroupName" -ForegroundColor Green
+        } catch {
+            $groupAdded = $false
+            Write-Warning "Account '$upn' was created but could not be added to '$targetGroupName': $($_.Exception.Message)"
+        }
+
         if ($script:available -gt 0) {
-            Set-MgUserLicense -UserId $newUser.Id -AddLicenses @{ SkuId = $sku.SkuId } -RemoveLicenses @()
-            $script:available--
+            try {
+                Set-MgUserLicense -UserId $newUser.Id -AddLicenses @{ SkuId = $sku.SkuId } -RemoveLicenses @() -ErrorAction Stop
+                $script:available--
+            } catch {
+                Write-Warning "Account '$upn' was created but license assignment failed: $($_.Exception.Message)"
+            }
         }
     }
 
-    return [pscustomobject]@{ Status = 'created'; Upn = $upn; Password = $password }
+    return [pscustomobject]@{ Status = 'created'; Upn = $upn; Password = $password; GroupAdded = ($WhatIfOnly -or $groupAdded) }
 }
 
 function Get-StudentMatchInfo {
@@ -416,6 +437,7 @@ $summaryFailed = 0
 $summaryReview = 0
 $summaryFuzzy = 0
 $summaryFormMismatch = 0
+$summaryGroupFailed = 0
 $seenRowKeys = @{}   # "name|form" -> first sheet row that used it, for true in-sheet duplicate rows
 
 # Reject repeated supplied addresses before any account creation. With no stable
@@ -583,8 +605,9 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
         continue
     }
 
-    $results[$sheetRow] = @{ Status = 'created'; Upn = $creation.Upn; Password = $creation.Password }
+    $results[$sheetRow] = @{ Status = 'created'; Upn = $creation.Upn; Password = $creation.Password; GroupAdded = $creation.GroupAdded }
     $summaryCreated++
+    if (-not $creation.GroupAdded) { $summaryGroupFailed++ }
 }
 
 # Resolve review rows against the MIS/tenant before rerunning; no name-only override.
@@ -679,7 +702,7 @@ foreach ($sheetRow in $results.Keys) {
         $cell.Style.Fill.PatternType = 'Solid'
         $cell.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::LightCoral)
     } elseif ($result -is [hashtable] -and $result.Status -eq 'created') {
-        $ws.Cells[$sheetRow, $statusColIndex].Value = "New account created"
+        $ws.Cells[$sheetRow, $statusColIndex].Value = if ($result.GroupAdded) { "New account created; added to $targetGroupName" } else { "New account created; group assignment failed" }
         $cell.Value = $result.Upn
         $cell.Style.Fill.PatternType = 'Solid'
         $cell.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::Yellow)
@@ -699,5 +722,6 @@ Write-Host "  (of which, Form looked outdated):          $summaryFormMismatch" -
 Write-Host "Skipped (dup rows): $summarySkippedDup"
 Write-Host "Needs manual review: $summaryReview" -ForegroundColor DarkYellow
 Write-Host "Failed to create:   $summaryFailed" -ForegroundColor Red
+Write-Host "Group add failures: $summaryGroupFailed" -ForegroundColor $(if ($summaryGroupFailed) { 'Red' } else { 'Green' })
 Write-Host "Results written to: $OutputPath"
 Write-Host "===================================="
