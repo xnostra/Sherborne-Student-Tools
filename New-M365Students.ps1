@@ -412,7 +412,13 @@ $reviewReasons = @{}
 $claimedUpns = @{}
 for ($j = 0; $j -lt $rows.Count; $j++) {
     $emailKey = "$($rows[$j].'Pupil Email Address')".Trim().ToLowerInvariant()
-    if ($emailKey) { $emailRows[$emailKey] = @($emailRows[$emailKey]) + ($j + 2) }
+    if ($emailKey) {
+        if ($emailRows.ContainsKey($emailKey)) {
+            $emailRows[$emailKey] = @($emailRows[$emailKey]) + ($j + 2)
+        } else {
+            $emailRows[$emailKey] = @($j + 2)
+        }
+    }
 }
 foreach ($emailKey in @($emailRows.Keys)) {
     if ($emailRows[$emailKey].Count -gt 1) {
