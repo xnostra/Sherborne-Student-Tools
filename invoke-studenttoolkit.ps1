@@ -12,8 +12,27 @@ $cacheBuster = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
 
 $files = @("New-M365Students.ps1", "Add-M365StudentsByName.ps1", "Set-M365StudentPasswords.ps1", "StudentToolkit.ps1")
-foreach ($file in $files) {
-    Invoke-WebRequest -Uri "$repoRaw/$file?v=$cacheBuster" -OutFile (Join-Path $targetDir $file) -UseBasicParsing -Headers @{ 'Cache-Control' = 'no-cache' }
+$downloads = New-Object 'System.Collections.Generic.List[object]'
+try {
+    foreach ($file in $files) {
+        $destination = Join-Path $targetDir $file
+        $temporaryDownload = "$destination.$cacheBuster.download"
+        Invoke-WebRequest -Uri "$repoRaw/${file}?v=$cacheBuster" -OutFile $temporaryDownload -UseBasicParsing -Headers @{ 'Cache-Control' = 'no-cache' } -ErrorAction Stop
+        $downloads.Add([pscustomobject]@{ Temporary = $temporaryDownload; Destination = $destination })
+    }
+    foreach ($download in $downloads) {
+        Move-Item -LiteralPath $download.Temporary -Destination $download.Destination -Force
+    }
+} catch {
+    foreach ($download in $downloads) {
+        if (Test-Path -LiteralPath $download.Temporary) {
+            Remove-Item -LiteralPath $download.Temporary -Force
+        }
+    }
+    if ($temporaryDownload -and (Test-Path -LiteralPath $temporaryDownload)) {
+        Remove-Item -LiteralPath $temporaryDownload -Force
+    }
+    throw "Toolkit update failed. Existing Desktop files were not launched. $($_.Exception.Message)"
 }
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $targetDir "StudentToolkit.ps1")
