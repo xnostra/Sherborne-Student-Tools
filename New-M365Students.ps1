@@ -265,7 +265,7 @@ if (-not $suggested) {
 }
 if (-not $suggested -and $studentA5Skus) {
     $a5Status = $studentA5Skus | ForEach-Object { "$($_.SkuPartNumber): $($_.PrepaidUnits.Enabled - $_.ConsumedUnits) available" }
-    throw "Microsoft 365 A5 for Students was found, but it has no available seats ($($a5Status -join '; ')). Free or buy a seat before creating students."
+    Write-Warning "Microsoft 365 A5 for Students was found, but it has no available seats ($($a5Status -join '; ')). Choose another available license below, or free/buy A5 student seats."
 }
 if ($suggested) { Write-Host "`n  (Recommended: [$($suggested[0])] Microsoft 365 A5 for Students)" -ForegroundColor Yellow }
 
