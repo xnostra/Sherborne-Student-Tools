@@ -53,7 +53,7 @@ param(
     [switch]$WhatIfOnly
 )
 
-$ToolkitVersion = '2026.09.07.5'
+$ToolkitVersion = '2026.09.07.6'
 Write-Host "Sherborne Student Toolkit $ToolkitVersion" -ForegroundColor Cyan
 
 function Test-SherborneToolAccess {
@@ -423,6 +423,7 @@ $seenRowKeys = @{}   # "name|form" -> first sheet row that used it, for true in-
 $emailRows = [System.Collections.Generic.Dictionary[string, System.Collections.Generic.List[int]]]::new([System.StringComparer]::OrdinalIgnoreCase)
 $reviewReasons = @{}
 $claimedUpns = @{}
+$duplicateEmailByRow = @{}
 for ($j = 0; $j -lt $rows.Count; $j++) {
     $emailKey = "$($rows[$j].'Pupil Email Address')".Trim()
     if ($emailKey) {
@@ -436,7 +437,7 @@ foreach ($emailEntry in $emailRows.GetEnumerator()) {
     if ($emailEntry.Value.Count -gt 1) {
         $rowList = $emailEntry.Value -join ', '
         foreach ($r in $emailEntry.Value) {
-            $reviewReasons[$r] = "Repeated supplied email '$($emailEntry.Key)'; rows $rowList"
+            $duplicateEmailByRow[$r] = $emailEntry.Key
         }
     }
 }
@@ -449,12 +450,6 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
 
     Write-Host "`n--- Row $sheetRow`: $fullName ---"
 
-    if ($reviewReasons.ContainsKey($sheetRow)) {
-        $results[$sheetRow] = 'review'
-        $summaryReview++
-        continue
-    }
-
     $rowKey = "$key|$($row.Form)"
 
     if ($seenRowKeys.ContainsKey($rowKey)) {
@@ -466,6 +461,10 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
     $seenRowKeys[$rowKey] = $sheetRow
 
     $existingEmail = if ($row.'Pupil Email Address') { $row.'Pupil Email Address'.ToString().Trim() } else { '' }
+    if ($duplicateEmailByRow.ContainsKey($sheetRow)) {
+        Write-Warning "iSAMS email '$existingEmail' is shared by multiple rows. Ignoring that email for this row and resolving '$fullName' independently by name."
+        $existingEmail = ''
+    }
     if ($existingEmail) {
         try {
             $found = Get-MgUser -UserId $existingEmail -Property DisplayName, UserPrincipalName, Department -ErrorAction Stop
@@ -524,6 +523,18 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
 
     # Extra duplicate safety net: display-name match already in the tenant
     $nameMatches = @(Get-MgUser -Filter "displayName eq '$($fullName.Replace("'", "''"))'" -Property DisplayName, UserPrincipalName, Department -All -ErrorAction Stop)
+    $recoveredFromDuplicate = $false
+    if ($nameMatches.Count -eq 0 -and $duplicateEmailByRow.ContainsKey($sheetRow)) {
+        # A duplicated iSAMS email is unreliable. Search a limited Microsoft candidate set
+        # by first name, then apply the existing full-name fuzzy comparison locally.
+        $firstName = (@($fullName -split '\s+' | Where-Object { $_ }))[0]
+        $escapedFirstName = $firstName.Replace("'", "''")
+        $prefixMatches = @(Get-MgUser -Filter "startsWith(displayName,'$escapedFirstName')" -Property DisplayName, UserPrincipalName, Department -All -ErrorAction Stop)
+        $nameMatches = @($prefixMatches | Where-Object {
+            (Get-NameMatchQuality -NormA (Get-NormalizedName $_.DisplayName) -NormB (Get-NormalizedName $fullName)) -in @('exact', 'fuzzy')
+        })
+        $recoveredFromDuplicate = $true
+    }
     $confirmedMatches = @($nameMatches | Where-Object { (Get-StudentMatchInfo -TenantUser $_ -Row $row -FullName $fullName).FormMatches })
 
     if ($nameMatches.Count -eq 1 -and $confirmedMatches.Count -eq 1) {
@@ -535,8 +546,10 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
         }
         $claimedUpns[$claim] = $sheetRow
         $usedUpns.Add($m.UserPrincipalName) | Out-Null
-        $results[$sheetRow] = @{ Status = 'existing'; Upn = $m.UserPrincipalName; MatchType = 'exact' }
+        $matchType = if ($recoveredFromDuplicate) { 'fuzzy' } else { 'exact' }
+        $results[$sheetRow] = @{ Status = 'existing'; Upn = $m.UserPrincipalName; MatchType = $matchType }
         $summaryExisting++
+        if ($recoveredFromDuplicate) { $summaryFuzzy++ }
         continue
     } elseif ($nameMatches.Count -eq 1) {
         # The display name is exact and unique. Form/Department can be stale in Microsoft,
