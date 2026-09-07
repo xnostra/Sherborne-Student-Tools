@@ -53,7 +53,7 @@ param(
     [switch]$WhatIfOnly
 )
 
-$ToolkitVersion = '2026.09.07.4'
+$ToolkitVersion = '2026.09.07.5'
 Write-Host "Sherborne Student Toolkit $ToolkitVersion" -ForegroundColor Cyan
 
 function Test-SherborneToolAccess {
@@ -487,6 +487,30 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
                 $results[$sheetRow] = @{ Status = 'existing'; Upn = $existingEmail; MatchType = 'exact' }
                 $summaryExisting++
                 continue
+            } elseif ($match.NameQuality -eq 'exact') {
+                Write-Warning "Existing account confirmed by exact name for '$fullName', but Microsoft Form '$($found.Department)' differs from iSAMS Form '$($row.Form)'. Treating as existing with a stale-Form warning."
+                $claim = $found.UserPrincipalName.ToLowerInvariant()
+                if ($claimedUpns.ContainsKey($claim)) {
+                    throw "Account $claim claimed by rows $($claimedUpns[$claim]) and $sheetRow; output not finalized."
+                }
+                $claimedUpns[$claim] = $sheetRow
+                $usedUpns.Add($found.UserPrincipalName) | Out-Null
+                $results[$sheetRow] = @{ Status = 'existing'; Upn = $found.UserPrincipalName; MatchType = 'form-mismatch' }
+                $summaryExisting++
+                $summaryFormMismatch++
+                continue
+            } elseif ($match.NameQuality -eq 'fuzzy') {
+                Write-Host "Existing account matched from supplied email using a close name: $($found.UserPrincipalName) (Microsoft name '$($found.DisplayName)')." -ForegroundColor Cyan
+                $claim = $found.UserPrincipalName.ToLowerInvariant()
+                if ($claimedUpns.ContainsKey($claim)) {
+                    throw "Account $claim claimed by rows $($claimedUpns[$claim]) and $sheetRow; output not finalized."
+                }
+                $claimedUpns[$claim] = $sheetRow
+                $usedUpns.Add($found.UserPrincipalName) | Out-Null
+                $results[$sheetRow] = @{ Status = 'existing'; Upn = $found.UserPrincipalName; MatchType = 'fuzzy' }
+                $summaryExisting++
+                $summaryFuzzy++
+                continue
             } else {
                 Write-Warning "Sheet lists '$existingEmail' for '$fullName' (form '$($row.Form)'), but that account belongs to '$($found.DisplayName)' (form '$($found.Department)') - this looks like a different student. Flagging for manual review instead of assuming they're the same."
                 $results[$sheetRow] = 'review'
@@ -494,10 +518,7 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
                 continue
             }
         } else {
-            $reviewReasons[$sheetRow] = 'Supplied email not found; verify identity before creating an account'
-            $results[$sheetRow] = 'review'
-            $summaryReview++
-            continue
+            Write-Warning "Supplied email '$existingEmail' was not found. Continuing with exact display-name lookup before considering account creation."
         }
     }
 
@@ -516,6 +537,21 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
         $usedUpns.Add($m.UserPrincipalName) | Out-Null
         $results[$sheetRow] = @{ Status = 'existing'; Upn = $m.UserPrincipalName; MatchType = 'exact' }
         $summaryExisting++
+        continue
+    } elseif ($nameMatches.Count -eq 1) {
+        # The display name is exact and unique. Form/Department can be stale in Microsoft,
+        # so accept the identity but make the stale Form visible in the output.
+        $m = $nameMatches[0]
+        Write-Warning "Found unique exact-name account '$($m.UserPrincipalName)' for '$fullName', but Microsoft Form '$($m.Department)' differs from iSAMS Form '$($row.Form)'. Treating as existing."
+        $claim = $m.UserPrincipalName.ToLowerInvariant()
+        if ($claimedUpns.ContainsKey($claim)) {
+            throw "Account $claim claimed by rows $($claimedUpns[$claim]) and $sheetRow; output not finalized."
+        }
+        $claimedUpns[$claim] = $sheetRow
+        $usedUpns.Add($m.UserPrincipalName) | Out-Null
+        $results[$sheetRow] = @{ Status = 'existing'; Upn = $m.UserPrincipalName; MatchType = 'form-mismatch' }
+        $summaryExisting++
+        $summaryFormMismatch++
         continue
     } elseif ($nameMatches.Count -gt 0) {
         # Multiple accounts share this exact name and none has a matching Form - too risky to guess,
