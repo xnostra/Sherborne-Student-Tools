@@ -407,23 +407,23 @@ $seenRowKeys = @{}   # "name|form" -> first sheet row that used it, for true in-
 
 # Reject repeated supplied addresses before any account creation. With no stable
 # pupil ID, do not guess whether two rows are duplicate exports or two people.
-$emailRows = @{}
+$emailRows = [System.Collections.Generic.Dictionary[string, System.Collections.Generic.List[int]]]::new([System.StringComparer]::OrdinalIgnoreCase)
 $reviewReasons = @{}
 $claimedUpns = @{}
 for ($j = 0; $j -lt $rows.Count; $j++) {
-    $emailKey = "$($rows[$j].'Pupil Email Address')".Trim().ToLowerInvariant()
+    $emailKey = "$($rows[$j].'Pupil Email Address')".Trim()
     if ($emailKey) {
-        if ($emailRows.ContainsKey($emailKey)) {
-            $emailRows[$emailKey] = @($emailRows[$emailKey]) + ($j + 2)
-        } else {
-            $emailRows[$emailKey] = @($j + 2)
+        if (-not $emailRows.ContainsKey($emailKey)) {
+            $emailRows[$emailKey] = [System.Collections.Generic.List[int]]::new()
         }
+        $emailRows[$emailKey].Add($j + 2)
     }
 }
-foreach ($emailKey in @($emailRows.Keys)) {
-    if ($emailRows[$emailKey].Count -gt 1) {
-        foreach ($r in $emailRows[$emailKey]) {
-            $reviewReasons[$r] = "Repeated supplied email; rows $($emailRows[$emailKey] -join ', ')"
+foreach ($emailEntry in $emailRows.GetEnumerator()) {
+    if ($emailEntry.Value.Count -gt 1) {
+        $rowList = $emailEntry.Value -join ', '
+        foreach ($r in $emailEntry.Value) {
+            $reviewReasons[$r] = "Repeated supplied email '$($emailEntry.Key)'; rows $rowList"
         }
     }
 }
