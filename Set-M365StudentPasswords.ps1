@@ -26,7 +26,9 @@ your input file as "<file> - passwords.csv" so they're easy to hand out.
 param(
     [string]$Email,
 
-    [string]$CsvPath
+    [string]$CsvPath,
+
+    [string]$NamesBase64
 )
 
 function Test-SherborneToolAccess {
@@ -133,13 +135,65 @@ function Open-OutlookDraft {
     Start-Process $mailto
 }
 
-if (-not $Email -and -not $CsvPath) {
-    throw "Provide either -Email (single account) or -CsvPath (bulk)."
+if (-not $Email -and -not $CsvPath -and -not $NamesBase64) {
+    throw "Provide an email, a CSV/XLSX file, or pasted student names/emails."
 }
 
 Connect-MgGraph -Scopes "User.ReadWrite.All", "Directory.ReadWrite.All"
 
-if ($Email) {
+if ($NamesBase64) {
+    try { $lookupText = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($NamesBase64)) }
+    catch { throw 'The pasted names or email addresses could not be read.' }
+
+    $lookups = @($lookupText -split "`r?`n" | ForEach-Object { ($_ -replace '^\s*[-*•]\s*', '').Trim() } | Where-Object { $_ })
+    if ($lookups.Count -eq 0) { throw 'Paste at least one full name or email address.' }
+
+    $resolved = @()
+    foreach ($lookup in ($lookups | Select-Object -Unique)) {
+        if ($lookup -match '[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}') {
+            $email = Get-CleanEmail -Text $lookup
+            try {
+                $user = Get-MgUser -UserId $email -Property DisplayName,UserPrincipalName -ErrorAction Stop
+                $resolved += [pscustomobject]@{ Lookup = $lookup; Email = $user.UserPrincipalName; Status = 'Matched' }
+            } catch {
+                $resolved += [pscustomobject]@{ Lookup = $lookup; Email = ''; Status = 'Skipped - email not found' }
+            }
+        } else {
+            $escapedName = $lookup.Replace("'", "''")
+            $matches = @(Get-MgUser -Filter "displayName eq '$escapedName'" -Property DisplayName,UserPrincipalName -All -ErrorAction SilentlyContinue)
+            if ($matches.Count -eq 1) {
+                $resolved += [pscustomobject]@{ Lookup = $lookup; Email = $matches[0].UserPrincipalName; Status = 'Matched' }
+            } elseif ($matches.Count -gt 1) {
+                $resolved += [pscustomobject]@{ Lookup = $lookup; Email = ''; Status = 'Skipped - more than one exact name match' }
+            } else {
+                $resolved += [pscustomobject]@{ Lookup = $lookup; Email = ''; Status = 'Skipped - no exact name match found' }
+            }
+        }
+    }
+
+    Write-Host "`nPasted-name/email lookup:" -ForegroundColor Cyan
+    $resolved | Format-Table -AutoSize
+    $targets = @($resolved | Where-Object { $_.Status -eq 'Matched' })
+    if ($targets.Count -eq 0) { Write-Host 'No passwords were changed.' -ForegroundColor Yellow; exit 0 }
+
+    $mode = $null
+    while ($mode -notin @('A', 'M')) { $mode = (Read-Host "`nType A to auto-generate a password for each matched student, or M to set one password for all matched students").Trim().ToUpper() }
+    $sharedPassword = $null
+    if ($mode -eq 'M') {
+        while (-not $sharedPassword) {
+            $sharedPassword = (Read-Host "Enter the password to apply to all $($targets.Count) matched account(s)").Trim()
+            if (-not $sharedPassword) { Write-Warning "Password can't be blank." }
+        }
+    }
+
+    $confirm = (Read-Host "Reset passwords for $($targets.Count) matched account(s)? Type YES to continue").Trim().ToUpper()
+    if ($confirm -ne 'YES') { Write-Host 'No passwords were changed.' -ForegroundColor Yellow; exit 0 }
+    $results = @()
+    foreach ($target in $targets) { $results += Set-OneStudentPassword -TargetEmail $target.Email -FixedPassword $sharedPassword }
+    Write-Host "`nPassword reset results:" -ForegroundColor Cyan
+    $results | Format-Table -AutoSize
+    exit 0
+} elseif ($Email) {
     $Email = Get-CleanEmail -Text $Email
 
     $mode = $null

@@ -80,14 +80,15 @@ function New-ActionButton {
 }
 
 function Show-NamesPasteDialog {
+    param([string]$Title = 'Paste student names', [string]$Prompt = 'Paste one full name per line. You can paste just one name too.')
     $dialog = New-Object System.Windows.Forms.Form
-    $dialog.Text = "Paste student names"
+    $dialog.Text = $Title
     $dialog.Size = New-Object System.Drawing.Size(520, 430)
     $dialog.StartPosition = "CenterParent"
     $dialog.Font = New-Object System.Drawing.Font("Segoe UI", 10)
 
     $label = New-Object System.Windows.Forms.Label
-    $label.Text = "Paste one full name per line. You can paste just one name too."
+    $label.Text = $Prompt
     $label.AutoSize = $true
     $label.Location = New-Object System.Drawing.Point(18, 16)
     $dialog.Controls.Add($label)
@@ -163,13 +164,14 @@ $btnBulkResetPw.Add_Click({
     Start-Process powershell.exe -ArgumentList "-NoExit", "-Command", $cmd
 })
 
-# --- Button 4: Reset a single student's password ---
-$btnSingleResetPw = New-ActionButton -Text "SINGLE - Set / Reset One Password" -Y 330
+# --- Button 4: Reset passwords from pasted names or email addresses ---
+$btnSingleResetPw = New-ActionButton -Text "PASTE - Set / Reset Password(s)" -Y 330
 $btnSingleResetPw.Add_Click({
-    $rawEmail = [Microsoft.VisualBasic.Interaction]::InputBox("Email address of the account (you can paste messy text - it'll be extracted):", "Email", "")
-    if (-not $rawEmail) { return }
+    $lookups = Show-NamesPasteDialog -Title 'Paste student names or email addresses' -Prompt 'Paste one full name or email address per line. You can paste just one entry too.'
+    if (-not $lookups -or -not $lookups.Trim()) { return }
 
-    $cmd = "& '$scriptDir\Set-M365StudentPasswords.ps1' -Email '$rawEmail'"
+    $encodedLookups = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lookups))
+    $cmd = "& '$scriptDir\Set-M365StudentPasswords.ps1' -NamesBase64 '$encodedLookups'"
     Start-Process powershell.exe -ArgumentList "-NoExit", "-Command", $cmd
 })
 

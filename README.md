@@ -19,7 +19,7 @@ That's it - it downloads the toolkit scripts to `Desktop\StudentToolkit` and ope
 | **BULK - Add New Students (XLSX)** | Bulk | Reads the school MIS export, creates missing student accounts, assigns the A5 for Students license, and highlights results in a copy of the file |
 | **PASTE - Add Student Name(s)** | Quick add | Paste one or more full names, one per line. Exact Microsoft 365 name matches are skipped; genuinely new names can be created and licensed after confirmation. |
 | **BULK - Reset Passwords (Prep / SEN)** | Bulk | Resets passwords for a list of student accounts - built for whole-class Prep/SEN resets |
-| **SINGLE - Set / Reset One Password** | Single | Paste an email (messy text gets extracted automatically) and reset just that one account |
+| **PASTE - Set / Reset Password(s)** | Quick reset | Paste one or more full names or email addresses, one per line. Exact Microsoft 365 name matches are shown before any passwords are changed. |
 
 Each button opens a console window where you sign in / pick options - the GUI itself just collects your inputs.
 
@@ -53,9 +53,11 @@ What it does:
 
 Add `-WhatIfOnly` to preview without creating any accounts.
 
-## Password Reset (single account or bulk)
+## Password Reset (pasted names/emails or bulk file)
 
-**Single account** - paste an email and reset just that one:
+Choose **PASTE - Set / Reset Password(s)** to paste one full name, one email address, or several entries one per line. The tool resolves each entry in Microsoft 365, shows which accounts matched or were skipped, and requires confirmation before changing passwords.
+
+**Single account by email** - run this directly if you already know the email:
 
 ```powershell
 .\Set-M365StudentPasswords.ps1 -Email pupil@sherborneqatar.org
