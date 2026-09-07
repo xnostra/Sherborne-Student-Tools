@@ -96,9 +96,16 @@ function Test-UpnTaken {
         $existing = Get-MgUser -UserId $Upn -ErrorAction Stop
         return $null -ne $existing
     } catch {
-        if ([int]$_.Exception.ResponseStatusCode -eq 404) { return $false }
+        if (Test-GraphNotFound -ErrorRecord $_) { return $false }
         throw  # An unavailable directory is not evidence that a UPN is free.
     }
+}
+
+function Test-GraphNotFound {
+    param($ErrorRecord)
+
+    return $ErrorRecord.FullyQualifiedErrorId -match 'Request_ResourceNotFound' -or
+           $ErrorRecord.Exception.Message -match '(?i)Status:\s*404|does not exist'
 }
 
 function New-StudentUpn {
@@ -388,9 +395,12 @@ function Get-StudentMatchInfo {
     # (e.g. the student moved up a Form) rather than a genuinely different student.
     $sheetForm = "$($Row.Form)".Trim()
     $tenantForm = "$($TenantUser.Department)".Trim()
-    $formMatches = -not [string]::IsNullOrWhiteSpace($sheetForm) -and
-                   -not [string]::IsNullOrWhiteSpace($tenantForm) -and
-                   ($sheetForm -eq $tenantForm)
+    # Many existing tenant accounts have no Department. A blank tenant value is
+    # not evidence of a mismatch; use Form only when both systems provide it.
+    $formMatches = $true
+    if ($sheetForm -and $tenantForm -and $sheetForm -ne $tenantForm) {
+        $formMatches = $false
+    }
 
     return [pscustomobject]@{ NameQuality = $quality; FormMatches = $formMatches }
 }
@@ -457,7 +467,7 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
         try {
             $found = Get-MgUser -UserId $existingEmail -Property DisplayName, UserPrincipalName, Department -ErrorAction Stop
         } catch {
-            if ([int]$_.Exception.ResponseStatusCode -ne 404) { throw }
+            if (-not (Test-GraphNotFound -ErrorRecord $_)) { throw }
             $found = $null
         }
         if ($found) {
