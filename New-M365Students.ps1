@@ -214,6 +214,28 @@ function Get-NameMatchQuality {
 # --- Load rows ---
 $rows = Import-Excel -Path $XlsxPath
 
+# Show exactly which rows are candidates for account creation before any tenant changes are made.
+$missingEmailRows = @()
+for ($i = 0; $i -lt $rows.Count; $i++) {
+    $email = "$($rows[$i].'Pupil Email Address')".Trim()
+    if (-not $email) {
+        $missingEmailRows += [pscustomobject]@{
+            SheetRow = $i + 2
+            FullName = "$($rows[$i].'Full Name')".Trim()
+            Form     = "$($rows[$i].Form)".Trim()
+        }
+    }
+}
+if ($missingEmailRows.Count -eq 0) {
+    Write-Host "No rows have a blank Pupil Email Address. There are no new student accounts to create." -ForegroundColor Yellow
+} else {
+    Write-Host "`nRows with no Pupil Email Address (possible new accounts):" -ForegroundColor Cyan
+    foreach ($candidate in $missingEmailRows) {
+        Write-Host "  Row $($candidate.SheetRow): $($candidate.FullName)  (Form $($candidate.Form))"
+    }
+    Write-Host "Total possible new accounts: $($missingEmailRows.Count)" -ForegroundColor Cyan
+}
+
 # --- Duplicate full-name detection within the sheet ---
 # Same Full Name + same Form is treated as a genuine duplicate row (skipped).
 # Same Full Name but a DIFFERENT Form is treated as two different students who happen to
