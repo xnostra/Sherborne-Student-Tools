@@ -5,9 +5,18 @@ Downloads the toolkit scripts to the Desktop and launches the GUI.
     irm https://raw.githubusercontent.com/xnostra/Sherborne-Student-Tools/master/invoke-studenttoolkit.ps1 | iex
 #>
 
-$repoRaw = "https://raw.githubusercontent.com/xnostra/Sherborne-Student-Tools/master"
+$repoApi = "https://api.github.com/repos/xnostra/Sherborne-Student-Tools"
 $targetDir = Join-Path $env:USERPROFILE "Desktop\StudentToolkit"
-$cacheBuster = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+
+try {
+    $latestCommit = Invoke-RestMethod -Uri "$repoApi/commits/master" -Headers @{ 'User-Agent' = 'Sherborne-Student-Toolkit' } -ErrorAction Stop
+    $commitSha = $latestCommit.sha
+    if ($commitSha -notmatch '^[0-9a-f]{40}$') { throw 'GitHub did not return a valid commit identifier.' }
+} catch {
+    throw "Could not determine the latest toolkit version. $($_.Exception.Message)"
+}
+
+$repoRaw = "https://raw.githubusercontent.com/xnostra/Sherborne-Student-Tools/$commitSha"
 
 New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
 
@@ -16,8 +25,8 @@ $downloads = New-Object 'System.Collections.Generic.List[object]'
 try {
     foreach ($file in $files) {
         $destination = Join-Path $targetDir $file
-        $temporaryDownload = "$destination.$cacheBuster.download"
-        Invoke-WebRequest -Uri "$repoRaw/${file}?v=$cacheBuster" -OutFile $temporaryDownload -UseBasicParsing -Headers @{ 'Cache-Control' = 'no-cache' } -ErrorAction Stop
+        $temporaryDownload = "$destination.$commitSha.download"
+        Invoke-WebRequest -Uri "$repoRaw/$file" -OutFile $temporaryDownload -UseBasicParsing -ErrorAction Stop
         $downloads.Add([pscustomobject]@{ Temporary = $temporaryDownload; Destination = $destination })
     }
     foreach ($download in $downloads) {
