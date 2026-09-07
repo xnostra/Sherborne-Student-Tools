@@ -289,6 +289,19 @@ Write-Host "Using license: $($sku.SkuPartNumber)"
 $emailNumber = Read-Host "`nWhat number should be appended to new student email addresses? (e.g. 26 or 26q)"
 if ($emailNumber -notmatch '^[a-zA-Z0-9]+$') { throw "The value can only contain letters and digits (e.g. 26 or 26q)." }
 
+$passwordMode = ''
+while ($passwordMode -notin @('A', 'M')) {
+    $passwordMode = (Read-Host "`nType A to create the usual automatic password for each student, or M to set one password for all new students").Trim().ToUpper()
+}
+
+$sharedPassword = $null
+if ($passwordMode -eq 'M') {
+    while (-not $sharedPassword) {
+        $sharedPassword = (Read-Host "Enter the password to apply to every new student").Trim()
+        if (-not $sharedPassword) { Write-Warning "Password can't be blank." }
+    }
+}
+
 $usedUpns = New-Object 'System.Collections.Generic.HashSet[string]'
 
 # --- Process rows, tracking outcomes per Excel row number (header = row 1) ---
@@ -299,7 +312,7 @@ function New-StudentAccount {
     $surname  = $Row.Surname
     $upn = New-StudentUpn -Forename $forename -Surname $surname -Number $emailNumber -UsedThisRun $UsedUpns
     $UsedUpns.Add($upn) | Out-Null
-    $password = New-StudentPassword -Forename $forename -Surname $surname
+    $password = if ($sharedPassword) { $sharedPassword } else { New-StudentPassword -Forename $forename -Surname $surname }
     $mailNickname = $upn.Split('@')[0]
 
     Write-Host "New UPN:  $upn"
