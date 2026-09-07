@@ -495,7 +495,7 @@ for ($i = 0; $i -lt $rows.Count; $i++) {
 
     $creation = New-StudentAccount -FullName $fullName -Row $row -UsedUpns $usedUpns
     if ($creation.Status -eq 'failed') {
-        $results[$sheetRow] = 'skipped'
+        $results[$sheetRow] = @{ Status = 'failed' }
         $summaryFailed++
         continue
     }
@@ -578,6 +578,7 @@ $nextFreeCol = $ws.Dimension.End.Column + 1
 $upnColIndex  = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Created UPN" -NextFreeCol ([ref]$nextFreeCol)
 $userColIndex = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Username" -NextFreeCol ([ref]$nextFreeCol)
 $pwColIndex   = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Created Password" -NextFreeCol ([ref]$nextFreeCol)
+$statusColIndex = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Account Status" -NextFreeCol ([ref]$nextFreeCol)
 
 # --- Legend explaining the "Pupil Email Address" cell highlight colors ---
 $legendCol = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Legend (Pupil Email Address highlight)" -NextFreeCol ([ref]$nextFreeCol)
@@ -589,6 +590,7 @@ $legendRows = @(
     @{ Text = "Light Blue = existing account matched by a close/fuzzy name - please spot-check"; Color = [System.Drawing.Color]::LightSkyBlue }
     @{ Text = "Khaki  = existing account confirmed by name, but tenant Form looks outdated"; Color = [System.Drawing.Color]::Khaki }
     @{ Text = "Orange = needs manual review (name/email mismatch found)"; Color = [System.Drawing.Color]::Orange }
+    @{ Text = "Red    = account creation failed (see console output)"; Color = [System.Drawing.Color]::LightCoral }
     @{ Text = "No fill = duplicate row, skipped"; Color = $null }
 )
 for ([int]$legendIdx = 0; $legendIdx -lt $legendRows.Count; $legendIdx++) {
@@ -607,6 +609,7 @@ foreach ($sheetRow in $results.Keys) {
     $cell = $ws.Cells[$sheetRow, $emailCol]
 
     if ($result -is [hashtable] -and $result.Status -eq 'existing') {
+        $ws.Cells[$sheetRow, $statusColIndex].Value = "Existing account confirmed"
         $cell.Value = $result.Upn
         $cell.Style.Fill.PatternType = 'Solid'
         $color = switch ($result.MatchType) {
@@ -617,9 +620,15 @@ foreach ($sheetRow in $results.Keys) {
         $cell.Style.Fill.BackgroundColor.SetColor($color)
         $ws.Cells[$sheetRow, $userColIndex].Value = Get-UsernameFromUpn -Upn $result.Upn
     } elseif ($result -eq 'review') {
+        $ws.Cells[$sheetRow, $statusColIndex].Value = "Needs manual review"
         $cell.Style.Fill.PatternType = 'Solid'
         $cell.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::Orange)
+    } elseif ($result -is [hashtable] -and $result.Status -eq 'failed') {
+        $ws.Cells[$sheetRow, $statusColIndex].Value = "Failed to create"
+        $cell.Style.Fill.PatternType = 'Solid'
+        $cell.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::LightCoral)
     } elseif ($result -is [hashtable] -and $result.Status -eq 'created') {
+        $ws.Cells[$sheetRow, $statusColIndex].Value = "New account created"
         $cell.Value = $result.Upn
         $cell.Style.Fill.PatternType = 'Solid'
         $cell.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::Yellow)

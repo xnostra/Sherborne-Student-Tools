@@ -232,9 +232,15 @@ Please keep this password confidential.
         $sheetRow = $i + 2
 
         $rowEmail = $row.$emailCol
-        if (-not $rowEmail) { continue }
+        if (-not $rowEmail) {
+            $rowOutcomes[$sheetRow] = @{ Status = 'Skipped - blank email'; Username = ''; Password = '' }
+            continue
+        }
         $rowEmail = $rowEmail.ToString().Trim()
-        if (-not $rowEmail) { continue }
+        if (-not $rowEmail) {
+            $rowOutcomes[$sheetRow] = @{ Status = 'Skipped - blank email'; Username = ''; Password = '' }
+            continue
+        }
 
         $result = Set-OneStudentPassword -TargetEmail $rowEmail -FixedPassword $sharedPassword
         $results += $result
@@ -271,6 +277,7 @@ Please keep this password confidential.
     $nextFreeCol = $ws.Dimension.End.Column + 1
     $userColIndex = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Username" -NextFreeCol ([ref]$nextFreeCol)
     $pwColIndex   = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "New Password" -NextFreeCol ([ref]$nextFreeCol)
+    $statusColIndex = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Password Reset Status" -NextFreeCol ([ref]$nextFreeCol)
 
     # --- Legend explaining the highlight colors ---
     $legendCol = Get-OrAddColumn -Worksheet $ws -HeaderLookup $headerCols -Title "Legend" -NextFreeCol ([ref]$nextFreeCol)
@@ -279,7 +286,7 @@ Please keep this password confidential.
     $legendRows = @(
         @{ Text = "Green  = password reset successfully"; Color = [System.Drawing.Color]::LightGreen }
         @{ Text = "Orange = failed to reset (see console output)"; Color = [System.Drawing.Color]::Orange }
-        @{ Text = "No fill = skipped (blank email)"; Color = $null }
+        @{ Text = "Yellow = skipped (blank email)"; Color = [System.Drawing.Color]::Yellow }
     )
     for ([int]$legendIdx = 0; $legendIdx -lt $legendRows.Count; $legendIdx++) {
         $legendRowNum = 2 + $legendIdx
@@ -297,11 +304,15 @@ Please keep this password confidential.
         $cell = $ws.Cells[$sheetRow, $emailColIndex]
 
         $ws.Cells[$sheetRow, $userColIndex].Value = $outcome.Username
+        $ws.Cells[$sheetRow, $statusColIndex].Value = $outcome.Status
 
         if ($outcome.Status -eq 'Reset') {
             $cell.Style.Fill.PatternType = 'Solid'
             $cell.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::LightGreen)
             $ws.Cells[$sheetRow, $pwColIndex].Value = $outcome.Password
+        } elseif ($outcome.Status -eq 'Skipped - blank email') {
+            $cell.Style.Fill.PatternType = 'Solid'
+            $cell.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::Yellow)
         } else {
             $cell.Style.Fill.PatternType = 'Solid'
             $cell.Style.Fill.BackgroundColor.SetColor([System.Drawing.Color]::Orange)
