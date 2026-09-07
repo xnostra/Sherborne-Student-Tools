@@ -259,7 +259,10 @@ for ($i = 0; $i -lt $skus.Count; $i++) {
     $label = if ($s.SkuPartNumber -eq 'M365EDU_A5_STUUSEBNFT') { 'Microsoft 365 A5 for Students (Student Use Benefit)' } else { $s.SkuPartNumber }
     Write-Host "  [$i] $label  (available: $free)"
 }
-$suggested = 0..($skus.Count - 1) | Where-Object { $studentA5SkuPartNumbers -contains $skus[$_].SkuPartNumber }
+$suggested = @(0..($skus.Count - 1) | Where-Object { $skus[$_].SkuPartNumber -eq 'M365EDU_A5_STUUSEBNFT' })
+if (-not $suggested) {
+    $suggested = @(0..($skus.Count - 1) | Where-Object { $studentA5SkuPartNumbers -contains $skus[$_].SkuPartNumber })
+}
 if (-not $suggested -and $studentA5Skus) {
     $a5Status = $studentA5Skus | ForEach-Object { "$($_.SkuPartNumber): $($_.PrepaidUnits.Enabled - $_.ConsumedUnits) available" }
     throw "Microsoft 365 A5 for Students was found, but it has no available seats ($($a5Status -join '; ')). Free or buy a seat before creating students."
