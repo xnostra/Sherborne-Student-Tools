@@ -30,7 +30,7 @@ $colorText      = [System.Drawing.Color]::FromArgb(60, 60, 60)
 # --- Form ---
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Sherborne Qatar Student Tools"
-$form.Size = New-Object System.Drawing.Size(440, 540)
+$form.Size = New-Object System.Drawing.Size(440, 610)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
 $form.MaximizeBox = $false
@@ -79,6 +79,47 @@ function New-ActionButton {
     return $btn
 }
 
+function Show-NamesPasteDialog {
+    $dialog = New-Object System.Windows.Forms.Form
+    $dialog.Text = "Paste student names"
+    $dialog.Size = New-Object System.Drawing.Size(520, 430)
+    $dialog.StartPosition = "CenterParent"
+    $dialog.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = "Paste one full name per line. You can paste just one name too."
+    $label.AutoSize = $true
+    $label.Location = New-Object System.Drawing.Point(18, 16)
+    $dialog.Controls.Add($label)
+
+    $box = New-Object System.Windows.Forms.TextBox
+    $box.Multiline = $true
+    $box.AcceptsReturn = $true
+    $box.ScrollBars = "Vertical"
+    $box.Size = New-Object System.Drawing.Size(465, 285)
+    $box.Location = New-Object System.Drawing.Point(18, 48)
+    $dialog.Controls.Add($box)
+
+    $ok = New-Object System.Windows.Forms.Button
+    $ok.Text = "Continue"
+    $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $ok.Size = New-Object System.Drawing.Size(105, 34)
+    $ok.Location = New-Object System.Drawing.Point(270, 345)
+    $dialog.AcceptButton = $ok
+    $dialog.Controls.Add($ok)
+
+    $cancel = New-Object System.Windows.Forms.Button
+    $cancel.Text = "Cancel"
+    $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $cancel.Size = New-Object System.Drawing.Size(105, 34)
+    $cancel.Location = New-Object System.Drawing.Point(380, 345)
+    $dialog.CancelButton = $cancel
+    $dialog.Controls.Add($cancel)
+
+    if ($dialog.ShowDialog($form) -eq [System.Windows.Forms.DialogResult]::OK) { return $box.Text }
+    return $null
+}
+
 # --- Button 1: New students from MIS export ---
 $btnNewStudents = New-ActionButton -Text "BULK - Add New Students (XLSX)" -Y 120
 $btnNewStudents.Add_Click({
@@ -95,8 +136,22 @@ $btnNewStudents.Add_Click({
     Start-Process powershell.exe -ArgumentList "-NoExit", "-Command", $cmd
 })
 
-# --- Button 2: Bulk reset passwords (Prep / SEN students) ---
-$btnBulkResetPw = New-ActionButton -Text "BULK - Reset Passwords (Prep / SEN)" -Y 190
+# --- Button 2: Add students from pasted names ---
+$btnPasteStudents = New-ActionButton -Text "PASTE - Add Student Name(s)" -Y 190
+$btnPasteStudents.Add_Click({
+    $names = Show-NamesPasteDialog
+    if (-not $names -or -not $names.Trim()) { return }
+
+    $location = [Microsoft.VisualBasic.Interaction]::InputBox("Usage location (e.g. QA):", "Usage Location", "QA")
+    if (-not $location) { return }
+
+    $encodedNames = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($names))
+    $cmd = "& '$scriptDir\Add-M365StudentsByName.ps1' -NamesBase64 '$encodedNames' -UsageLocation '$location'"
+    Start-Process powershell.exe -ArgumentList "-NoExit", "-Command", $cmd
+})
+
+# --- Button 3: Bulk reset passwords (Prep / SEN students) ---
+$btnBulkResetPw = New-ActionButton -Text "BULK - Reset Passwords (Prep / SEN)" -Y 260
 $btnBulkResetPw.Add_Click({
     $ofd = New-Object System.Windows.Forms.OpenFileDialog
     $ofd.InitialDirectory = $scriptDir
@@ -108,8 +163,8 @@ $btnBulkResetPw.Add_Click({
     Start-Process powershell.exe -ArgumentList "-NoExit", "-Command", $cmd
 })
 
-# --- Button 3: Reset a single student's password ---
-$btnSingleResetPw = New-ActionButton -Text "SINGLE - Set / Reset One Password" -Y 260
+# --- Button 4: Reset a single student's password ---
+$btnSingleResetPw = New-ActionButton -Text "SINGLE - Set / Reset One Password" -Y 330
 $btnSingleResetPw.Add_Click({
     $rawEmail = [Microsoft.VisualBasic.Interaction]::InputBox("Email address of the account (you can paste messy text - it'll be extracted):", "Email", "")
     if (-not $rawEmail) { return }
@@ -124,7 +179,7 @@ $note.Text = "Each action opens a console window - sign in there when prompted."
 $note.Font = New-Object System.Drawing.Font("Segoe UI", 8.5)
 $note.AutoSize = $true
 $note.ForeColor = [System.Drawing.Color]::Gray
-$note.Location = New-Object System.Drawing.Point(30, 440)
+$note.Location = New-Object System.Drawing.Point(30, 510)
 $form.Controls.Add($note)
 
 $version = New-Object System.Windows.Forms.Label
@@ -132,7 +187,7 @@ $version.Text = "Sherborne Qatar Student Tools"
 $version.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 $version.AutoSize = $true
 $version.ForeColor = [System.Drawing.Color]::LightGray
-$version.Location = New-Object System.Drawing.Point(30, 465)
+$version.Location = New-Object System.Drawing.Point(30, 535)
 $form.Controls.Add($version)
 
 [void]$form.ShowDialog()

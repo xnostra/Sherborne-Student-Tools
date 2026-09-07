@@ -17,10 +17,15 @@ That's it - it downloads the toolkit scripts to `Desktop\StudentToolkit` and ope
 | Button | Mode | What it does |
 |---|---|---|
 | **BULK - Add New Students (XLSX)** | Bulk | Reads the school MIS export, creates missing student accounts, assigns the A5 for Students license, and highlights results in a copy of the file |
+| **PASTE - Add Student Name(s)** | Quick add | Paste one or more full names, one per line. Exact Microsoft 365 name matches are skipped; genuinely new names can be created and licensed after confirmation. |
 | **BULK - Reset Passwords (Prep / SEN)** | Bulk | Resets passwords for a list of student accounts - built for whole-class Prep/SEN resets |
 | **SINGLE - Set / Reset One Password** | Single | Paste an email (messy text gets extracted automatically) and reset just that one account |
 
 Each button opens a console window where you sign in / pick options - the GUI itself just collects your inputs.
+
+## Quick add from pasted names
+
+Choose **PASTE - Add Student Name(s)** and paste one full name per line (or just one name). The tool checks each exact full-name match in Microsoft 365 before creating anything. It shows the full list, asks for the licence, email suffix, and password option, then requires you to type `YES` before it creates the genuinely new accounts.
 
 ## New Student File Format (XLSX, from the school MIS export)
 
