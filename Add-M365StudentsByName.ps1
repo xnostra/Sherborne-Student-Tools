@@ -19,10 +19,7 @@ function Get-CleanLetters {
     return ($Text -replace '[^a-zA-Z]', '').ToLower()
 }
 
-function Get-AssignableSeatCount {
-    param($SubscribedSku)
-    return ([int]$SubscribedSku.PrepaidUnits.Enabled + [int]$SubscribedSku.PrepaidUnits.Warning - [int]$SubscribedSku.ConsumedUnits)
-}
+. (Join-Path $PSScriptRoot 'StudentLicenses.ps1')
 
 function Test-UpnTaken {
     param([string]$Upn, [System.Collections.Generic.HashSet[string]]$UsedThisRun)
@@ -30,7 +27,11 @@ function Test-UpnTaken {
     if ($UsedThisRun.Contains($Upn)) { return $true }
     try { return $null -ne (Get-MgUser -UserId $Upn -ErrorAction Stop) }
     catch {
-        if ([int]$_.Exception.ResponseStatusCode -eq 404) { return $false }
+        # Graph SDK versions expose 404 differently; the generated cmdlet reports
+        # Request_ResourceNotFound in FullyQualifiedErrorId on Windows PowerShell.
+        if ($_.Exception.ResponseStatusCode -eq 404 -or
+            $_.Exception.Response.StatusCode -eq 404 -or
+            $_.FullyQualifiedErrorId -match '^Request_ResourceNotFound(?:,|$)') { return $false }
         throw
     }
 }
@@ -87,22 +88,7 @@ if ($targetGroups.Count -gt 1) { throw "More than one Microsoft 365 group is nam
 $targetGroup = $targetGroups[0]
 Write-Host "New accounts will be added to: $targetGroupName" -ForegroundColor Cyan
 
-$studentA5SkuPartNumbers = @('M365EDU_A5_STUUSEBNFT', 'M365EDU_A5_STUDENT', 'M365EDU_A5_NOPSTNCONF_STUUSEBNFT', 'M365EDU_A5_NOPSTNCONF_STUDENT', 'ENTERPRISEPREMIUM_STUUSEBNFT', 'ENTERPRISEPREMIUM_STUDENT', 'ENTERPRISEPREMIUM_NOPSTNCONF_STUUSEBNFT', 'ENTERPRISEPREMIUM_NOPSTNCONF_STUDENT')
-$skus = @(Get-MgSubscribedSku -All | Where-Object { (Get-AssignableSeatCount $_) -gt 0 })
-if (-not $skus) { throw 'No licenses with available seats were found in this tenant.' }
-
-Write-Host "`nAvailable licenses in this tenant:"
-for ($i = 0; $i -lt $skus.Count; $i++) {
-    $label = if ($skus[$i].SkuPartNumber -eq 'M365EDU_A5_STUUSEBNFT') { 'Microsoft 365 A5 for Students (Student Use Benefit)' } else { $skus[$i].SkuPartNumber }
-    Write-Host "  [$i] $label  (available: $(Get-AssignableSeatCount $skus[$i]))"
-}
-$recommended = @(0..($skus.Count - 1) | Where-Object { $skus[$_].SkuPartNumber -eq 'M365EDU_A5_STUUSEBNFT' })
-if (-not $recommended) { $recommended = @(0..($skus.Count - 1) | Where-Object { $studentA5SkuPartNumbers -contains $skus[$_].SkuPartNumber }) }
-if ($recommended) { Write-Host "`nRecommended: [$($recommended[0])] Microsoft 365 A5 for Students" -ForegroundColor Yellow }
-$choice = Read-Host 'Enter the license number (press Enter for the recommended license)'
-if ([string]::IsNullOrWhiteSpace($choice) -and $recommended) { $choice = $recommended[0] }
-$sku = $skus[[int]$choice]
-if (-not $sku) { throw 'Invalid license selection.' }
+$sku = Select-StudentLicense
 $available = Get-AssignableSeatCount $sku
 
 $emailNumber = Read-Host 'What should be appended to new email addresses? (e.g. 26 or 26q)'

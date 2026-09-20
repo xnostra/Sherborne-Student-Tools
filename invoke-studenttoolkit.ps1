@@ -20,7 +20,7 @@ $repoRaw = "https://raw.githubusercontent.com/xnostra/Sherborne-Student-Tools/$c
 
 New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
 
-$files = @("New-M365Students.ps1", "Add-M365StudentsByName.ps1", "Set-M365StudentPasswords.ps1", "StudentToolkit.ps1")
+$files = @("StudentLicenses.ps1", "New-M365Students.ps1", "Add-M365StudentsByName.ps1", "Set-M365StudentPasswords.ps1", "StudentToolkit.ps1")
 $downloads = New-Object 'System.Collections.Generic.List[object]'
 try {
     foreach ($file in $files) {

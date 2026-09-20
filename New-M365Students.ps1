@@ -275,57 +275,10 @@ if ($targetGroups.Count -gt 1) { throw "More than one Microsoft 365 group is nam
 $targetGroup = $targetGroups[0]
 Write-Host "New accounts will be added to: $targetGroupName" -ForegroundColor Cyan
 
-function Get-AssignableSeatCount {
-    param($SubscribedSku)
+. (Join-Path $PSScriptRoot 'StudentLicenses.ps1')
 
-    # The admin centre counts both active and warning-state seats as available during the
-    # subscription grace period. Exclude only suspended and locked-out seats.
-    $enabled = [int]$SubscribedSku.PrepaidUnits.Enabled
-    $warning = [int]$SubscribedSku.PrepaidUnits.Warning
-    return ($enabled + $warning - [int]$SubscribedSku.ConsumedUnits)
-}
-
-$studentA5SkuPartNumbers = @(
-    # Current Microsoft 365 Education A5 student entitlement.
-    'M365EDU_A5_STUUSEBNFT',
-    # Older/alternative A5 student subscriptions that a tenant may still have.
-    'M365EDU_A5_STUDENT',
-    'M365EDU_A5_NOPSTNCONF_STUUSEBNFT',
-    'M365EDU_A5_NOPSTNCONF_STUDENT',
-    'ENTERPRISEPREMIUM_STUUSEBNFT',
-    'ENTERPRISEPREMIUM_STUDENT',
-    'ENTERPRISEPREMIUM_NOPSTNCONF_STUUSEBNFT',
-    'ENTERPRISEPREMIUM_NOPSTNCONF_STUDENT'
-)
-
-$allSkus = @(Get-MgSubscribedSku -All)
-$studentA5Skus = @($allSkus | Where-Object { $studentA5SkuPartNumbers -contains $_.SkuPartNumber })
-$skus = @($allSkus | Where-Object { (Get-AssignableSeatCount $_) -gt 0 })
-if (-not $skus) { throw "No licenses with available seats were found in this tenant." }
-
-Write-Host "`nAvailable licenses in this tenant:"
-for ($i = 0; $i -lt $skus.Count; $i++) {
-    $s = $skus[$i]
-    $free = Get-AssignableSeatCount $s
-    $label = if ($s.SkuPartNumber -eq 'M365EDU_A5_STUUSEBNFT') { 'Microsoft 365 A5 for Students (Student Use Benefit)' } else { $s.SkuPartNumber }
-    Write-Host "  [$i] $label  (available: $free)"
-}
-$suggested = @(0..($skus.Count - 1) | Where-Object { $skus[$_].SkuPartNumber -eq 'M365EDU_A5_STUUSEBNFT' })
-if (-not $suggested) {
-    $suggested = @(0..($skus.Count - 1) | Where-Object { $studentA5SkuPartNumbers -contains $skus[$_].SkuPartNumber })
-}
-if (-not $suggested -and $studentA5Skus) {
-    $a5Status = $studentA5Skus | ForEach-Object { "$($_.SkuPartNumber): $(Get-AssignableSeatCount $_) available" }
-    Write-Warning "Microsoft 365 A5 for Students was found, but it has no available seats ($($a5Status -join '; ')). Choose another available license below, or free/buy A5 student seats."
-}
-if ($suggested) { Write-Host "`n  (Recommended: [$($suggested[0])] Microsoft 365 A5 for Students)" -ForegroundColor Yellow }
-
-$choice = Read-Host "`nEnter the number of the A5 Student license to assign (press Enter for the recommended license)"
-if ([string]::IsNullOrWhiteSpace($choice) -and $suggested) { $choice = $suggested[0] }
-$sku = $skus[[int]$choice]
-if (-not $sku) { throw "Invalid selection." }
+$sku = Select-StudentLicense
 $available = Get-AssignableSeatCount $sku
-Write-Host "Using license: $($sku.SkuPartNumber)"
 
 $emailNumber = Read-Host "`nWhat number should be appended to new student email addresses? (e.g. 26 or 26q)"
 if ($emailNumber -notmatch '^[a-zA-Z0-9]+$') { throw "The value can only contain letters and digits (e.g. 26 or 26q)." }
